@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, type MouseEvent, useState } from "react";
 import {
 	type AppState,
 	type DiscoveredCamera,
@@ -8,9 +8,14 @@ import {
 } from "@/shared/schema";
 import { ConfirmButton, Dialog, NameField } from "@/web/components/ui";
 import { api } from "@/web/lib/api";
+import { foundMenu, type MenuSpec } from "@/web/lib/menus";
+import { menuId } from "@/web/lib/wall";
 
 export const SETTINGS_TABS = ["Cameras", "Groups", "Views", "Add cameras"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
+
+/** Opens a menu whose items only this form knows about. */
+type MenuOpener = (event: MouseEvent<Element>, spec: MenuSpec) => void;
 
 const message = (error: unknown) => (error instanceof Error ? error.message : "That did not work");
 
@@ -58,7 +63,7 @@ function CamerasTab({
 	return (
 		<ul className="rows">
 			{state.cameras.map((camera) => (
-				<li key={camera.id} className="row">
+				<li key={camera.id} className="row" data-menu={menuId.camera(camera.id)}>
 					<NameField
 						label="Camera name"
 						value={camera.name}
@@ -114,7 +119,7 @@ function GroupsTab({ state, commit }: { state: AppState; commit: (next: AppState
 			</form>
 			<ul className="rows">
 				{state.groups.map((group) => (
-					<li key={group.id} className="row row-two">
+					<li key={group.id} className="row row-two" data-menu={menuId.group(group.id)}>
 						<NameField
 							label="Group name"
 							value={group.name}
@@ -159,7 +164,11 @@ function ViewsTab({ state, commit }: { state: AppState; commit: (next: AppState)
 	return (
 		<ul className="rows">
 			{state.views.map((view) => (
-				<li key={view.id} className="row row-two">
+				<li
+					key={view.id}
+					className="row row-two"
+					data-menu={menuId.view({ kind: "saved", id: view.id })}
+				>
 					<NameField
 						label="View name"
 						value={view.name}
@@ -183,7 +192,15 @@ function ViewsTab({ state, commit }: { state: AppState; commit: (next: AppState)
 	);
 }
 
-function DiscoverForm({ state, onAdded }: { state: AppState; onAdded: (next: AppState) => void }) {
+function DiscoverForm({
+	state,
+	onAdded,
+	onMenu,
+}: {
+	state: AppState;
+	onAdded: (next: AppState) => void;
+	onMenu: MenuOpener;
+}) {
 	const [host, setHost] = useState("");
 	const [port, setPort] = useState("80");
 	const [user, setUser] = useState("");
@@ -282,7 +299,24 @@ function DiscoverForm({ state, onAdded }: { state: AppState; onAdded: (next: App
 						<>
 							<ul className="found-list">
 								{found.map((camera, i) => (
-									<li key={camera.main}>
+									<li
+										key={camera.main}
+										onContextMenu={(event) => {
+											const all = found.map((_, n) => n);
+											onMenu(
+												event,
+												foundMenu({
+													name: camera.name,
+													total: found.length,
+													picked: picked.size,
+													onlyThis: () => setPicked(new Set([i])),
+													all: () => setPicked(new Set(all)),
+													none: () => setPicked(new Set()),
+													invert: () => setPicked(new Set(all.filter((n) => !picked.has(n)))),
+												}),
+											);
+										}}
+									>
 										<label>
 											<input
 												type="checkbox"
@@ -403,12 +437,14 @@ export function SettingsDialog({
 	initialTab,
 	commit,
 	onLoaded,
+	onMenu,
 	onClose,
 }: {
 	state: AppState;
 	initialTab: SettingsTab;
 	commit: (next: AppState) => void;
 	onLoaded: (next: AppState) => void;
+	onMenu: MenuOpener;
 	onClose: () => void;
 }) {
 	const [tab, setTab] = useState<SettingsTab>(initialTab);
@@ -440,7 +476,7 @@ export function SettingsDialog({
 				{tab === "Views" && <ViewsTab state={state} commit={commit} />}
 				{tab === "Add cameras" && (
 					<div className="add-columns">
-						<DiscoverForm state={state} onAdded={onLoaded} />
+						<DiscoverForm state={state} onAdded={onLoaded} onMenu={onMenu} />
 						<ManualForm state={state} onAdded={onLoaded} />
 					</div>
 				)}

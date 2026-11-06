@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import type { AppState, CameraId, GroupId, PublicCamera } from "@/shared/schema";
 import type { PlayerState } from "@/web/lib/player";
 import { useStatuses } from "@/web/lib/status";
-import { dragId, refKey, type ViewRef } from "@/web/lib/wall";
+import { dragId, menuId, refKey, type ViewRef } from "@/web/lib/wall";
 
 function CameraRow({
 	camera,
@@ -23,6 +23,7 @@ function CameraRow({
 				ref={setNodeRef}
 				className={isDragging ? "rail-camera rail-camera-dragging" : "rail-camera"}
 				data-state={state ?? "idle"}
+				data-menu={menuId.camera(camera.id)}
 				onClick={() => onPick(camera.id)}
 				{...listeners}
 			>
@@ -60,7 +61,10 @@ function GroupSection({
 	const live = cameras.filter((c) => statuses.get(c.id) === "live").length;
 	return (
 		<section ref={setNodeRef} className={isOver ? "rail-group rail-group-over" : "rail-group"}>
-			<div className={refKey(viewRef) === current ? "rail-row rail-row-on" : "rail-row"}>
+			<div
+				className={refKey(viewRef) === current ? "rail-row rail-row-on" : "rail-row"}
+				data-menu={menuId.group(id)}
+			>
 				<button
 					type="button"
 					className="rail-chevron"
@@ -98,6 +102,8 @@ export function Rail({
 	current,
 	open,
 	dragging,
+	collapsed,
+	onToggle,
 	onOpen,
 	onPick,
 	onAdd,
@@ -107,6 +113,8 @@ export function Rail({
 	current: string;
 	open: boolean;
 	dragging: boolean;
+	collapsed: ReadonlySet<string>;
+	onToggle: (key: string) => void;
 	onOpen: (ref: ViewRef) => void;
 	onPick: (camera: CameraId) => void;
 	onAdd: () => void;
@@ -114,7 +122,6 @@ export function Rail({
 }) {
 	const statuses = useStatuses();
 	const [query, setQuery] = useState("");
-	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 
 	const matching = useMemo(() => {
 		const needle = query.trim().toLowerCase();
@@ -123,18 +130,15 @@ export function Rail({
 			: state.cameras.filter((c) => c.name.toLowerCase().includes(needle));
 	}, [state.cameras, query]);
 
-	const toggle = (key: string) =>
-		setCollapsed((previous) => {
-			const next = new Set(previous);
-			if (!next.delete(key)) next.add(key);
-			return next;
-		});
-
 	const ungrouped = matching.filter((c) => c.groupId === null);
 	const searching = query.trim() !== "";
 
 	return (
-		<aside className={open ? "rail rail-open" : "rail"} aria-label="Cameras and views">
+		<aside
+			className={open ? "rail rail-open" : "rail"}
+			aria-label="Cameras and views"
+			data-menu={menuId.rail}
+		>
 			<div className="rail-brand">Camwall</div>
 			<label className="rail-search">
 				<Search size={14} aria-hidden="true" />
@@ -147,7 +151,10 @@ export function Rail({
 				/>
 			</label>
 			<nav className="rail-scroll">
-				<div className={current === "all" ? "rail-row rail-row-on" : "rail-row"}>
+				<div
+					className={current === "all" ? "rail-row rail-row-on" : "rail-row"}
+					data-menu={menuId.view({ kind: "all" })}
+				>
 					<span className="rail-chevron" aria-hidden="true">
 						<LayoutGrid size={14} />
 					</span>
@@ -162,6 +169,7 @@ export function Rail({
 						<div
 							key={view.id}
 							className={refKey(ref) === current ? "rail-row rail-row-on" : "rail-row"}
+							data-menu={menuId.view(ref)}
 						>
 							<span className="rail-chevron" aria-hidden="true">
 								<LayoutGrid size={14} />
@@ -183,7 +191,7 @@ export function Rail({
 						cameras={matching.filter((c) => c.groupId === group.id)}
 						statuses={statuses}
 						collapsed={!searching && collapsed.has(group.id)}
-						onToggle={() => toggle(group.id)}
+						onToggle={() => onToggle(group.id)}
 						onOpen={onOpen}
 						onPick={onPick}
 					/>
@@ -197,7 +205,7 @@ export function Rail({
 						cameras={ungrouped}
 						statuses={statuses}
 						collapsed={!searching && collapsed.has("ungrouped")}
-						onToggle={() => toggle("ungrouped")}
+						onToggle={() => onToggle("ungrouped")}
 						onOpen={onOpen}
 						onPick={onPick}
 					/>

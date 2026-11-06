@@ -16,9 +16,7 @@ import { Menu } from "@/web/components/ui";
 import type { Fit } from "@/web/components/Wall";
 import { useClock } from "@/web/lib/hooks";
 import { useStatuses } from "@/web/lib/status";
-
-export const TOUR_SECONDS = [5, 10, 15, 30, 60] as const;
-export type TourSeconds = (typeof TOUR_SECONDS)[number];
+import { menuId, TOUR_SECONDS, type TourSeconds } from "@/web/lib/wall";
 
 function Clock() {
 	const now = useClock();
@@ -36,7 +34,7 @@ function Health() {
 	const lost = values.filter((state) => state === "retrying").length;
 	if (values.length === 0) return null;
 	return (
-		<span className="health">
+		<span className="health" data-menu={menuId.health}>
 			<span className="health-live">{live} live</span>
 			{lost > 0 && <span className="health-lost">{lost} lost</span>}
 		</span>
@@ -45,6 +43,7 @@ function Health() {
 
 export function TopBar({
 	title,
+	titleMenu,
 	edited,
 	savedView,
 	layout,
@@ -66,6 +65,8 @@ export function TopBar({
 	onHelp,
 }: {
 	title: string;
+	/** What a right click on the title is about: the camera in full view, or the open view. */
+	titleMenu: string;
 	edited: boolean;
 	savedView: boolean;
 	layout: LayoutId;
@@ -87,7 +88,7 @@ export function TopBar({
 	onHelp: () => void;
 }) {
 	return (
-		<header className="topbar">
+		<header className="topbar" data-menu={menuId.wall}>
 			<button
 				type="button"
 				className="tool"
@@ -97,7 +98,9 @@ export function TopBar({
 			>
 				<PanelLeft size={17} />
 			</button>
-			<h1 className="title">{title}</h1>
+			<h1 className="title" data-menu={titleMenu}>
+				{title}
+			</h1>
 			{edited && (
 				<span className="edits">
 					{savedView && (

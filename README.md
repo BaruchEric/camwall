@@ -16,6 +16,7 @@ Most recorders ship a Windows client or a plugin that stopped working years ago.
 - **Find cameras over ONVIF.** Enter a recorder's address and tick the channels you want. Pasting an RTSP address works too.
 - **Bandwidth care.** Only tiles on screen pull video, a hidden tab pulls nothing, and streams open four at a time so a slow recorder isn't hit with every channel at once.
 - **Phones.** The camera list becomes a drawer and the wall scrolls in two columns.
+- **Right-click menus.** Every tile, camera, group, view and bar has one, and it changes with what you clicked: a lost camera leads with reconnecting, an empty tile lists what the wall is missing, and a camera's menu holds a small copy of the wall with live frames, so you can press the tile it should go on. Hold a finger down on a phone. Shift + right click gets the browser's own menu.
 
 ![A saved view with one large tile and five small ones](docs/view.jpg)
 

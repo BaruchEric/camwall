@@ -5,16 +5,8 @@ import type { QualityChoice } from "@/shared/quality";
 import type { PublicCamera, Quality } from "@/shared/schema";
 import { MsePlayer, type PlayerState, type PlayerStats } from "@/web/lib/player";
 import { saveSnapshot } from "@/web/lib/snapshot";
-import { clearTile, reportTile } from "@/web/lib/status";
-import { dragId } from "@/web/lib/wall";
-
-const STATE_TEXT: Record<PlayerState, string> = {
-	idle: "Paused",
-	waiting: "Waiting",
-	connecting: "Connecting",
-	live: "Live",
-	retrying: "No signal, retrying",
-};
+import { clearTile, rateText, reportRate, reportTile, STATE_TEXT } from "@/web/lib/status";
+import { dragId, menuId } from "@/web/lib/wall";
 
 const NEXT_CHOICE: Record<QualityChoice, QualityChoice> = {
 	auto: "main",
@@ -22,10 +14,6 @@ const NEXT_CHOICE: Record<QualityChoice, QualityChoice> = {
 	sub: "auto",
 };
 const CHOICE_TEXT: Record<QualityChoice, string> = { auto: "Auto", main: "HD", sub: "SD" };
-
-function rate(kbps: number): string {
-	return kbps >= 1000 ? `${(kbps / 1000).toFixed(1)} Mb/s` : `${kbps} kb/s`;
-}
 
 function socketUrl(camera: string, quality: Quality): string {
 	const scheme = location.protocol === "https:" ? "wss" : "ws";
@@ -40,6 +28,8 @@ export type TileProps = {
 	selected: boolean;
 	full: boolean;
 	active: boolean;
+	/** Goes up by one to drop the stream and open it again. */
+	restart: number;
 	onSelect: () => void;
 	onOpen: () => void;
 	onClose: () => void;
@@ -55,6 +45,7 @@ export function Tile({
 	selected,
 	full,
 	active,
+	restart,
 	onSelect,
 	onOpen,
 	onClose,
@@ -66,6 +57,7 @@ export function Tile({
 	const [onScreen, setOnScreen] = useState(false);
 	const [state, setState] = useState<PlayerState>("idle");
 	const [stats, setStats] = useState<PlayerStats | null>(null);
+	const [poppedOut, setPoppedOut] = useState(false);
 
 	const drop = useDroppable({ id: dragId.tile(index), disabled: full });
 	const drag = useDraggable({ id: dragId.tile(index), disabled: full || camera === null });
@@ -82,23 +74,43 @@ export function Tile({
 	}, []);
 
 	const cameraId = camera?.id ?? null;
+
 	useEffect(() => {
 		const element = video.current;
-		if (cameraId === null || !element || !onScreen || !active) return;
+		if (cameraId === null || !element) return;
+		const entered = () => setPoppedOut(true);
+		const left = () => setPoppedOut(false);
+		element.addEventListener("enterpictureinpicture", entered);
+		element.addEventListener("leavepictureinpicture", left);
+		return () => {
+			element.removeEventListener("enterpictureinpicture", entered);
+			element.removeEventListener("leavepictureinpicture", left);
+		};
+	}, [cameraId]);
+
+	// A popped out picture is the one thing worth playing while this tab is hidden.
+	const playing = poppedOut || (onScreen && active);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: a new `restart` is what reopens the stream
+	useEffect(() => {
+		const element = video.current;
+		if (cameraId === null || !element || !playing) return;
 		const player = new MsePlayer(element, socketUrl(cameraId, quality), {
 			onState: (next) => {
 				setState(next);
 				reportTile({ tile: index, camera: cameraId, state: next });
 				if (next !== "live") setStats(null);
 			},
-			onStats: setStats,
+			onStats: (next) => {
+				setStats(next);
+				reportRate(index, rateText(quality, next.kbps));
+			},
 		});
 		player.start();
 		return () => {
 			player.stop();
 			clearTile(index);
 		};
-	}, [cameraId, quality, onScreen, active, index]);
+	}, [cameraId, quality, playing, index, restart]);
 
 	const setRoot = (element: HTMLDivElement | null) => {
 		root.current = element;
@@ -112,7 +124,12 @@ export function Tile({
 
 	if (camera === null) {
 		return (
-			<div ref={setRoot} className={`${classes.join(" ")} tile-empty`} data-tile={index}>
+			<div
+				ref={setRoot}
+				className={`${classes.join(" ")} tile-empty`}
+				data-tile={index}
+				data-menu={menuId.tile(index)}
+			>
 				<button type="button" className="tile-hole" onClick={onSelect}>
 					{selected ? "Pick a camera from the list" : "Empty. Drag a camera here."}
 				</button>
@@ -122,7 +139,13 @@ export function Tile({
 
 	const lost = state === "retrying";
 	return (
-		<div ref={setRoot} className={classes.join(" ")} data-tile={index} data-state={state}>
+		<div
+			ref={setRoot}
+			className={classes.join(" ")}
+			data-tile={index}
+			data-state={state}
+			data-menu={menuId.tile(index)}
+		>
 			{/* The picture is a pointer shortcut. The strip's buttons do the same from a keyboard. */}
 			{/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard users select with the arrow keys */}
 			{/* biome-ignore lint/a11y/noStaticElementInteractions: see above */}
@@ -183,13 +206,7 @@ export function Tile({
 					</button>
 				</span>
 				<span className="strip-info">
-					{state === "live" && stats ? (
-						<>
-							{quality === "main" ? "HD" : "SD"} {rate(stats.kbps)}
-						</>
-					) : (
-						STATE_TEXT[state]
-					)}
+					{state === "live" && stats ? rateText(quality, stats.kbps) : STATE_TEXT[state]}
 				</span>
 			</div>
 		</div>

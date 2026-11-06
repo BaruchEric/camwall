@@ -1,5 +1,5 @@
 import { LAYOUTS, type LayoutId } from "@/shared/layouts";
-import { type AppState, CameraId, GroupId, type View, type ViewId } from "@/shared/schema";
+import { type AppState, CameraId, GroupId, type View, ViewId } from "@/shared/schema";
 
 export type ViewRef =
 	| { kind: "all" }
@@ -8,6 +8,12 @@ export type ViewRef =
 	| { kind: "saved"; id: ViewId };
 
 export type Slot = CameraId | null;
+
+/** The tile in full view. It sits outside the wall's slots. */
+export const FULL_TILE = -1;
+
+export const TOUR_SECONDS = [5, 10, 15, 30, 60] as const;
+export type TourSeconds = (typeof TOUR_SECONDS)[number];
 
 export type WallState = {
 	ref: ViewRef;
@@ -119,7 +125,10 @@ export type WallAction =
 	| { type: "select"; index: number | null }
 	| { type: "focus"; camera: CameraId | null }
 	| { type: "assign"; index: number; camera: Slot }
+	| { type: "add"; cameras: readonly CameraId[] }
 	| { type: "swap"; a: number; b: number }
+	| { type: "reveal"; index: number }
+	| { type: "tidy" }
 	| { type: "saved"; ref: ViewRef };
 
 function withSlot(slots: readonly Slot[], index: number, camera: Slot): Slot[] {
@@ -127,6 +136,35 @@ function withSlot(slots: readonly Slot[], index: number, camera: Slot): Slot[] {
 	while (next.length <= index) next.push(null);
 	next[index] = camera;
 	return next;
+}
+
+/** Fills empty slots first, then adds to the end, so a new camera never pushes another along. */
+function withCameras(slots: readonly Slot[], cameras: readonly CameraId[]): Slot[] {
+	const next = [...slots];
+	for (const camera of cameras) {
+		const free = next.indexOf(null);
+		if (free >= 0) next[free] = camera;
+		else next.push(camera);
+	}
+	return next;
+}
+
+/** The camera before or after this one in full view, wrapping at the ends. */
+export function neighbour(wall: WallState, delta: number): CameraId | null {
+	const shown = wall.slots.filter((slot) => slot !== null);
+	if (wall.focused === null) return null;
+	const at = shown.indexOf(wall.focused);
+	return shown[(at + delta + shown.length) % shown.length] ?? null;
+}
+
+/** Cameras that would fill the wall's empty tiles, without adding a page. */
+export function fillers(wall: WallState, state: AppState): CameraId[] {
+	const shown = new Set(wall.slots);
+	const unused = state.cameras.map((c) => c.id).filter((id) => !shown.has(id));
+	const room = pageCount(wall) * cellsPerPage(wall) - wall.slots.filter(Boolean).length;
+	return wall.layout === "auto"
+		? unused.slice(0, wall.slots.filter((slot) => slot === null).length)
+		: unused.slice(0, room);
 }
 
 export function wallReducer(wall: WallState, action: WallAction): WallState {
@@ -161,6 +199,28 @@ export function wallReducer(wall: WallState, action: WallAction): WallState {
 				selected: action.index,
 				edited: true,
 			};
+		case "add": {
+			const slots = withCameras(wall.slots, action.cameras);
+			const [only] = action.cameras;
+			if (only === undefined || action.cameras.length > 1) {
+				return { ...wall, slots, edited: true };
+			}
+			const index = slots.indexOf(only);
+			const page = Math.floor(index / cellsPerPage({ layout: wall.layout, slots }));
+			return { ...wall, slots, page, selected: index, focused: null, edited: true };
+		}
+		case "reveal":
+			return {
+				...wall,
+				page: Math.floor(action.index / cellsPerPage(wall)),
+				selected: action.index,
+				focused: null,
+			};
+		case "tidy": {
+			const slots = wall.slots.filter((slot) => slot !== null);
+			const page = Math.min(wall.page, pageCount({ layout: wall.layout, slots }) - 1);
+			return { ...wall, slots, page, selected: null, edited: true };
+		}
 		case "swap": {
 			const first = wall.slots[action.a] ?? null;
 			const second = wall.slots[action.b] ?? null;
@@ -190,6 +250,50 @@ function tileIndex(id: string): number | null {
 	if (!id.startsWith("tile:")) return null;
 	const index = Number(id.slice(5));
 	return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+/** What a right click landed on. Elements name it in `data-menu`, the way drags use `dragId`. */
+export type MenuTarget =
+	| { kind: "tile"; index: number }
+	| { kind: "camera"; camera: CameraId }
+	| { kind: "group"; group: GroupId | null }
+	| { kind: "view"; ref: ViewRef }
+	| { kind: "wall" }
+	| { kind: "rail" }
+	| { kind: "health" };
+
+export const menuId = {
+	tile: (index: number) => `tile:${index}`,
+	camera: (id: CameraId) => `camera:${id}`,
+	group: (id: GroupId | null) => (id === null ? "ungrouped" : `group:${id}`),
+	view: (ref: ViewRef) => refKey(ref),
+	wall: "wall",
+	rail: "rail",
+	health: "health",
+};
+
+export function parseMenuTarget(id: string): MenuTarget | null {
+	if (id === "wall" || id === "rail" || id === "health") return { kind: id };
+	if (id === "ungrouped") return { kind: "group", group: null };
+	if (id === "all") return { kind: "view", ref: { kind: "all" } };
+	const [kind, value] = id.split(/:(.*)/);
+	if (kind === "tile") {
+		const index = Number(value);
+		return Number.isInteger(index) && index >= FULL_TILE ? { kind: "tile", index } : null;
+	}
+	if (kind === "camera") {
+		const camera = CameraId.safeParse(value);
+		return camera.success ? { kind: "camera", camera: camera.data } : null;
+	}
+	if (kind === "group") {
+		const group = GroupId.safeParse(value);
+		return group.success ? { kind: "group", group: group.data } : null;
+	}
+	if (kind === "view") {
+		const view = ViewId.safeParse(value);
+		return view.success ? { kind: "view", ref: { kind: "saved", id: view.data } } : null;
+	}
+	return null;
 }
 
 export function parseSource(id: string | number): DragSource | null {

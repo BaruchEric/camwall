@@ -942,7 +942,7 @@ label {
 
 .keys div {
 	display: grid;
-	grid-template-columns: 110px 1fr;
+	grid-template-columns: 136px 1fr;
 	gap: 8px;
 }
 
@@ -1022,5 +1022,400 @@ label {
 @media (prefers-reduced-motion: reduce) {
 	.rail {
 		transition: none;
+	}
+}
+
+/* Right-click menus. The head repeats a tile's label strip, so a menu reads as part of the wall. */
+
+.ctx-panel {
+	position: fixed;
+	z-index: 50;
+	top: 0;
+	left: 0;
+	display: flex;
+	flex-direction: column;
+	width: 256px;
+	max-height: calc(100dvh - 16px);
+	overflow: hidden;
+	background: var(--panel);
+	color: var(--text);
+	border: 1px solid var(--line);
+	border-radius: 6px;
+	box-shadow: 0 10px 28px rgb(4 9 14 / 0.45);
+	font: 400 14px / 1.2 var(--ui);
+	outline: none;
+	animation: ctx-open 90ms ease-out;
+	-webkit-touch-callout: none;
+	user-select: none;
+}
+
+.ctx-panel-wide {
+	width: 272px;
+}
+
+@keyframes ctx-open {
+	from {
+		opacity: 0;
+		transform: scale(0.97);
+	}
+}
+
+.ctx-head {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 7px;
+	height: 26px;
+	padding: 0 8px;
+	background: var(--strip);
+	color: var(--strip-text);
+	font: 500 14px / 1 var(--umd);
+}
+
+.ctx-head-name {
+	flex: 1;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.ctx-head-info {
+	flex: none;
+	color: var(--strip-dim);
+	font-size: 13px;
+}
+
+.ctx-body {
+	min-height: 0;
+	padding: 4px;
+	overflow-y: auto;
+}
+
+.ctx-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	height: 28px;
+	padding: 0 8px 0 6px;
+	border-radius: 3px;
+	text-align: left;
+}
+
+.ctx-item:focus,
+.ctx-item-open {
+	outline: none;
+	background: var(--panel-up);
+	box-shadow: inset 2px 0 var(--amber);
+}
+
+.ctx-item[aria-disabled="true"] {
+	color: var(--dim);
+	opacity: 0.6;
+	cursor: default;
+}
+
+.ctx-mark {
+	flex: none;
+	display: grid;
+	place-items: center;
+	width: 16px;
+	color: var(--dim);
+}
+
+.ctx-mark-wide {
+	width: 28px;
+}
+
+.ctx-label {
+	flex: 1;
+	min-width: 0;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.ctx-note,
+.ctx-keys {
+	flex: none;
+	color: var(--dim);
+	font: 500 13px / 1 var(--umd);
+}
+
+.ctx-more {
+	flex: none;
+	color: var(--dim);
+}
+
+/* A picked option wears the same block as a live tile's tally. */
+.ctx-check {
+	flex: none;
+	width: 10px;
+	height: 6px;
+	border-radius: 1px;
+	background: var(--amber);
+}
+
+.ctx-danger,
+.ctx-danger .ctx-mark {
+	color: var(--red);
+}
+
+.ctx-armed,
+.ctx-armed:focus {
+	background: var(--red);
+	box-shadow: none;
+	color: #fff;
+}
+
+.ctx-armed .ctx-mark,
+.ctx-armed .ctx-note {
+	color: #fff;
+}
+
+.ctx-rule {
+	margin: 4px 2px;
+	border: 0;
+	border-top: 1px solid var(--line);
+}
+
+.ctx-section {
+	padding: 6px 6px 3px;
+	color: var(--dim);
+	font: 500 13px / 1 var(--umd);
+}
+
+.ctx-empty {
+	padding: 8px 6px;
+	color: var(--dim);
+}
+
+.ctx-segment {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	height: 30px;
+	padding: 0 4px 0 30px;
+}
+
+.ctx-options {
+	display: flex;
+	flex: none;
+	gap: 2px;
+}
+
+.ctx-option {
+	min-width: 28px;
+	height: 22px;
+	padding: 0 5px;
+	border-radius: 3px;
+	border: 1px solid var(--line);
+	color: var(--dim);
+	font: 500 13px / 1 var(--umd);
+}
+
+.ctx-option:focus {
+	outline: none;
+	background: var(--panel-up);
+	color: var(--text);
+}
+
+.ctx-option-on,
+.ctx-option-on:focus {
+	border-color: var(--amber);
+	color: var(--amber);
+}
+
+.ctx-name {
+	padding: 2px;
+}
+
+.ctx-field {
+	height: 28px;
+}
+
+.ctx-filter {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 6px;
+	margin: 4px 4px 0;
+	padding: 0 6px;
+	height: 28px;
+	border-radius: 3px;
+	background: var(--base);
+	color: var(--dim);
+}
+
+.ctx-filter input {
+	flex: 1;
+	min-width: 0;
+	background: none;
+	border: 0;
+	outline: none;
+	color: var(--text);
+}
+
+/* The wall in miniature, frames and all. Press a tile to send the picture there. */
+
+.ctx-map {
+	padding: 4px 4px 2px;
+}
+
+.ctx-map-wall {
+	position: relative;
+	width: 100%;
+	max-height: 170px;
+	margin: 0 auto;
+	background: var(--wall);
+	border-radius: 3px;
+	overflow: hidden;
+}
+
+.ctx-cell {
+	position: absolute;
+	display: block;
+	padding: 0;
+	border: 1px solid var(--wall);
+	background: #1a2632;
+	overflow: hidden;
+}
+
+.ctx-cell canvas {
+	display: block;
+	width: 100%;
+	height: 100%;
+}
+
+.ctx-cell-empty {
+	background: transparent;
+	box-shadow: inset 0 0 0 1px #2c3a49;
+}
+
+.ctx-cell:focus {
+	outline: 2px solid var(--amber);
+	outline-offset: -2px;
+	z-index: 1;
+}
+
+.ctx-cell-here {
+	cursor: default;
+	box-shadow: inset 0 0 0 2px #5cc8d7;
+}
+
+.ctx-cell-here canvas {
+	opacity: 0.55;
+}
+
+.ctx-map-note {
+	padding: 5px 2px 2px;
+	color: var(--dim);
+	font: 500 13px / 1.1 var(--umd);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.tile[data-routing] {
+	outline: 2px dashed var(--amber);
+	outline-offset: -2px;
+	z-index: 1;
+}
+
+.rail-row[data-menu-open],
+.rail-camera[data-menu-open] {
+	background: var(--panel-up);
+	color: var(--text);
+}
+
+.ctx-back {
+	display: flex;
+	flex: none;
+	align-items: center;
+	gap: 4px;
+	width: 100%;
+	height: 44px;
+	padding: 0 10px;
+	font-weight: 600;
+	text-align: left;
+	border-bottom: 1px solid var(--line);
+}
+
+.ctx-scrim {
+	position: fixed;
+	z-index: 49;
+	inset: 0;
+	background: rgb(6 11 16 / 0.55);
+}
+
+/* On a phone the same menu rises from the bottom, one level at a time. */
+.ctx-sheet {
+	inset: auto 0 0;
+	width: auto;
+	max-height: min(76dvh, 600px);
+	border-width: 1px 0 0;
+	border-radius: 10px 10px 0 0;
+	padding-bottom: env(safe-area-inset-bottom);
+	animation: ctx-rise 140ms ease-out;
+}
+
+@keyframes ctx-rise {
+	from {
+		transform: translateY(24px);
+		opacity: 0;
+	}
+}
+
+/* A phone has no keys to hint at. */
+.ctx-sheet .ctx-keys {
+	display: none;
+}
+
+.ctx-sheet .ctx-head {
+	height: 34px;
+	padding: 0 12px;
+}
+
+.ctx-sheet .ctx-item {
+	height: 44px;
+	padding-left: 10px;
+	font-size: 15px;
+}
+
+.ctx-sheet .ctx-segment {
+	height: 46px;
+	padding-left: 34px;
+}
+
+.ctx-sheet .ctx-option {
+	min-width: 40px;
+	height: 32px;
+}
+
+.tile,
+.rail {
+	-webkit-touch-callout: none;
+}
+
+.toast {
+	position: fixed;
+	z-index: 60;
+	bottom: 18px;
+	left: 50%;
+	transform: translateX(-50%);
+	padding: 7px 14px;
+	border-radius: 4px;
+	background: var(--strip);
+	color: var(--strip-text);
+	border-left: 10px solid #5cc8d7;
+	font: 500 14px / 1 var(--umd);
+	box-shadow: 0 6px 18px rgb(4 9 14 / 0.5);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ctx-panel,
+	.ctx-sheet {
+		animation: none;
 	}
 }

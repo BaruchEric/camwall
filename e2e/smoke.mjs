@@ -128,6 +128,265 @@ await page.waitForTimeout(200);
 await page.screenshot({ path: join(out, "add.png") });
 await page.keyboard.press("Escape");
 
+// Right-click menus.
+const panel = page.locator(".ctx-panel");
+const item = (name) => page.locator(".ctx-item", { hasText: name });
+
+const defaultKept = (selector) =>
+	page.evaluate((target) => {
+		const element = document.querySelector(target);
+		const box = element.getBoundingClientRect();
+		const event = new MouseEvent("contextmenu", {
+			bubbles: true,
+			cancelable: true,
+			button: 2,
+			clientX: box.left + 4,
+			clientY: box.top + 4,
+		});
+		return element.dispatchEvent(event);
+	}, selector);
+
+await page.locator('[data-tile="5"] video').click({ button: "right" });
+check("a right click on video opens the menu", await panel.first().isVisible());
+await page.waitForTimeout(300);
+await page.screenshot({ path: join(out, "menu-tile.png") });
+check(
+	"the menu is about that tile",
+	(await page.locator(".ctx-head-name").textContent()) ===
+		(await page.locator('[data-tile="5"] .strip-name').textContent()),
+);
+check(
+	"the tile it is about is selected",
+	await page.locator('[data-tile="5"].tile-selected').isVisible(),
+);
+
+await page.keyboard.press("Escape");
+await page.locator('[data-tile="5"] .strip-name').click({ button: "right" });
+await page.waitForTimeout(100);
+check("a right click on a label opens the menu too", (await panel.count()) === 1);
+check("it leaves no word selected", await page.evaluate(() => getSelection().isCollapsed));
+
+await page.keyboard.press("ArrowDown");
+await page.keyboard.press("ArrowDown");
+check(
+	"arrows move inside the menu and leave the wall alone",
+	await page.locator('[data-tile="5"].tile-selected').isVisible(),
+);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+check("Escape closes the menu", (await panel.count()) === 0);
+check(
+	"Escape leaves the tile selected",
+	await page.locator('[data-tile="5"].tile-selected').isVisible(),
+);
+
+await page.keyboard.press("Shift+F10");
+await page.waitForTimeout(100);
+check("Shift+F10 opens the selected tile's menu", (await panel.count()) === 1);
+const firstRow = await page.evaluate(() => document.activeElement?.textContent ?? "");
+check("the keyboard lands on the first row", firstRow.includes("Open full view"), firstRow);
+await page.keyboard.press("Enter");
+await page.waitForTimeout(300);
+check("Enter runs the row", (await page.locator(".tile").count()) === 1);
+await page.locator(".tile video").click({ button: "right" });
+check("full view has its own menu", await item("Back to the wall").isVisible());
+await item("Back to the wall").click();
+await page.waitForTimeout(300);
+
+check("a text field keeps the browser's menu", await defaultKept(".rail-search input"));
+await page.locator(".rail-search input").click({ button: "right" });
+await page.waitForTimeout(100);
+check("a text field opens no menu of ours", (await panel.count()) === 0);
+await page.keyboard.press("Escape");
+await page.locator('[data-tile="2"] video').click({ button: "right", modifiers: ["Shift"] });
+await page.waitForTimeout(100);
+check("Shift + right click stays with the browser", (await panel.count()) === 0);
+
+await page.locator('[data-tile="3"] video').click({ button: "right" });
+await item("Rename camera").click();
+await page.locator(".ctx-field").fill("Renamed by smoke");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(400);
+check(
+	"renaming in the menu renames the camera",
+	(await page.locator('[data-tile="3"] .strip-name').textContent()) === "Renamed by smoke",
+);
+await page.locator('[data-tile="3"] video').click({ button: "right" });
+await item("Rename camera").click();
+await page.locator(".ctx-field").fill("Reception");
+await page.keyboard.press("Enter");
+await page.waitForTimeout(400);
+
+await page.locator('[data-tile="1"] video').click({ button: "right" });
+await item("Replace with").click();
+await page.waitForTimeout(200);
+await page.locator(".ctx-filter input").fill("fence");
+await page.waitForTimeout(100);
+await page.screenshot({ path: join(out, "menu-replace.png") });
+check(
+	"the camera list filters",
+	(await page.locator(".ctx-panel").last().locator(".ctx-item").count()) === 1,
+);
+await page.keyboard.press("Escape");
+await page.keyboard.press("Escape");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+check("Escape walks back out of a submenu", (await panel.count()) === 0);
+
+await page.locator(".rail-camera", { hasText: "Gate" }).click({ button: "right" });
+await page.waitForTimeout(300);
+await page.locator(".ctx-cell").nth(0).hover();
+await page.waitForTimeout(150);
+check(
+	"hovering the map lights the real tile",
+	await page.locator('[data-tile="0"][data-routing]').isVisible(),
+);
+await page.screenshot({ path: join(out, "menu-rail.png") });
+await page.locator(".ctx-cell").nth(0).click();
+await page.waitForTimeout(400);
+check(
+	"pressing the map routes the camera",
+	(await page.locator('[data-tile="0"] .strip-name').textContent()) === "Gate",
+);
+check("routing counts as an edit", await page.getByRole("button", { name: "Revert" }).isVisible());
+await page.locator(".wall").click({ button: "right", position: { x: 4, y: 4 } });
+await item("Revert changes").click();
+await page.waitForTimeout(300);
+
+await page.locator(".rail-view", { hasText: "Warehouse" }).click({ button: "right" });
+await page.waitForTimeout(200);
+await page.screenshot({ path: join(out, "menu-group.png") });
+await page.keyboard.press("Escape");
+await page.locator(".health").click({ button: "right" });
+await page.waitForTimeout(200);
+check("the health figures have a menu", await item("Reconnect everything").isVisible());
+await page.keyboard.press("Escape");
+
+await page.locator(".wall").click({ button: "right", position: { x: 4, y: 4 } });
+await page.waitForTimeout(100);
+await page.getByRole("menuitemradio", { name: "Seconds: 5" }).click();
+await page.keyboard.press("Escape");
+await page.keyboard.press("t");
+await page.locator(".wall").click({ button: "right", position: { x: 4, y: 4 } });
+await page.waitForTimeout(6000);
+check(
+	"the tour waits while a menu is open",
+	(await page.locator(".title").textContent()) === "All cameras",
+);
+check(
+	"a running tour leads the menu",
+	(await panel.locator(".ctx-item").first().textContent())?.includes("Stop tour"),
+);
+await panel.locator(".ctx-item").first().click();
+await page.waitForTimeout(100);
+
+await page.getByRole("button", { name: "Settings" }).first().click();
+await page.waitForTimeout(200);
+await page
+	.locator(".row-note")
+	.first()
+	.waitFor({ state: "attached" })
+	.catch(() => undefined);
+await page.getByRole("tab", { name: "Groups" }).click();
+await page.waitForTimeout(100);
+await page.locator(".row-note").first().click({ button: "right" });
+await page.waitForTimeout(200);
+await page.screenshot({ path: join(out, "menu-settings.png") });
+check("a menu opens above a dialog", await item("Rename group").isVisible());
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+check(
+	"Escape there closes the menu and not the dialog",
+	(await panel.count()) === 0 && (await page.locator("dialog[open]").count()) === 1,
+);
+await page.getByRole("tab", { name: "Add cameras" }).click();
+await page.route("**/api/discover", (route) =>
+	route.fulfill({
+		json: {
+			cameras: [1, 2, 3].map((n) => ({
+				name: `Channel ${n}`,
+				main: `rtsp://192.0.2.10/${n}`,
+				sub: null,
+				width: null,
+				height: null,
+			})),
+		},
+	}),
+);
+await page.locator(".form-grid input").first().fill("192.0.2.10");
+await page.getByRole("button", { name: "Find cameras" }).click();
+await page.locator(".found-list label", { hasText: "Channel 2" }).click({ button: "right" });
+await page.locator(".ctx-item", { hasText: "Tick only this one" }).click();
+await page.waitForTimeout(100);
+check(
+	"a found channel's menu sets the ticks",
+	(await page.getByRole("button", { name: "Add 1 camera" }).count()) === 1,
+);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+
+await page.locator(".wall").click({ button: "right", position: { x: 4, y: 4 } });
+await item("Layout").hover();
+await page.waitForTimeout(400);
+await page.screenshot({ path: join(out, "menu-layout.png") });
+await page.keyboard.press("Escape");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(100);
+await page.locator('[data-tile="4"] video').click({ button: "right" });
+await item("Pop out picture").click();
+await page.waitForFunction(() => document.pictureInPictureElement !== null);
+await page.evaluate(() => {
+	Object.defineProperty(document, "hidden", { configurable: true, get: () => true });
+	document.dispatchEvent(new Event("visibilitychange"));
+});
+await page.waitForTimeout(1500);
+const hidden = await page.evaluate(() => ({
+	popped: document.querySelector('[data-tile="4"]').dataset.state,
+	others: document.querySelectorAll('.tile[data-state="live"]').length,
+}));
+check(
+	"a popped out picture keeps playing in a hidden tab",
+	hidden.popped === "live" && hidden.others === 1,
+	JSON.stringify(hidden),
+);
+await page.evaluate(async () => {
+	await document.exitPictureInPicture();
+	delete document.hidden;
+	document.dispatchEvent(new Event("visibilitychange"));
+});
+await page.waitForTimeout(300);
+
+const lostContext = await browser.newContext({
+	viewport: { width: 1280, height: 800 },
+	colorScheme: "light",
+	permissions: ["clipboard-read", "clipboard-write"],
+});
+await lostContext.routeWebSocket(/\/ws\/gate\//, (socket) => socket.close());
+const flaky = await lostContext.newPage();
+await flaky.goto(`${base}/?view=group:yard`);
+await flaky.waitForSelector(".tile");
+await waitLive(flaky, 2);
+await flaky.waitForSelector('[data-state="retrying"]', { timeout: 15_000 });
+await flaky.locator('[data-tile="0"] .picture').click({ button: "right" });
+const lead = await flaky.locator(".ctx-item").first().textContent();
+check("a lost camera's menu leads with reconnecting", lead?.includes("Reconnect now"), lead);
+await flaky.waitForTimeout(200);
+await flaky.screenshot({ path: join(out, "menu-lost.png") });
+await flaky.keyboard.press("Escape");
+await flaky.locator(".health").click({ button: "right" });
+await flaky.waitForTimeout(200);
+await flaky.screenshot({ path: join(out, "menu-health.png") });
+check(
+	"the health menu names what is lost",
+	await flaky.locator(".ctx-item", { hasText: "Gate" }).isVisible(),
+);
+await flaky.keyboard.press("Escape");
+await flaky.locator('[data-tile="1"] video').click({ button: "right" });
+await flaky.locator(".ctx-item", { hasText: "Copy snapshot" }).click();
+await flaky.locator(".toast", { hasText: "Snapshot copied" }).waitFor({ timeout: 3000 });
+check("copying a snapshot says so", true);
+await lostContext.close();
+
 const phone = await browser.newContext({
 	viewport: { width: 390, height: 844 },
 	deviceScaleFactor: 3,
@@ -150,6 +409,68 @@ check(
 	playing >= 2 && playing < tiles,
 	`${playing} of ${tiles}`,
 );
+const held = await mobile.locator('[data-tile="0"] .picture').boundingBox();
+const touch = await phone.newCDPSession(mobile);
+const point = { x: held.x + held.width / 2, y: held.y + held.height / 2 };
+await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+await mobile.waitForTimeout(800);
+await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+await mobile.waitForTimeout(300);
+check("holding a finger opens the sheet", (await mobile.locator(".ctx-sheet").count()) === 1);
+await mobile.screenshot({ path: join(out, "menu-phone.png") });
+await mobile.locator(".ctx-item", { hasText: "Move to group" }).tap();
+await mobile.waitForTimeout(200);
+check("a sheet drills in", await mobile.locator(".ctx-back").isVisible());
+await mobile.screenshot({ path: join(out, "menu-phone-sub.png") });
+await mobile.locator(".ctx-back").tap();
+await mobile.waitForTimeout(200);
+await mobile.mouse.click(195, 20);
+await mobile.waitForTimeout(200);
+check("tapping the scrim closes the sheet", (await mobile.locator(".ctx-sheet").count()) === 0);
+
+const hold = async (selector, ms, moveTo) => {
+	const box = await mobile.locator(selector).boundingBox();
+	const start = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+	await touch.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [start] });
+	await mobile.waitForTimeout(ms);
+	if (moveTo) {
+		for (const part of [0.2, 0.4, 0.6, 0.8, 1]) {
+			const x = start.x + (moveTo.x - start.x) * part;
+			const y = start.y + (moveTo.y - start.y) * part;
+			await touch.send("Input.dispatchTouchEvent", {
+				type: "touchMove",
+				touchPoints: [{ x, y }],
+			});
+			await mobile.waitForTimeout(100);
+		}
+	}
+	await touch.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+	await mobile.waitForTimeout(300);
+};
+await hold('[data-tile="0"] .strip-name', 700);
+check(
+	"holding a tile's label and letting go opens the sheet",
+	(await mobile.locator(".ctx-sheet").count()) === 1,
+);
+await mobile.waitForTimeout(300);
+await mobile.mouse.click(195, 20);
+await mobile.waitForTimeout(200);
+const names = () => mobile.locator(".strip-name").allTextContents();
+const before = await names();
+const other = await mobile.locator('[data-tile="1"]').boundingBox();
+await hold('[data-tile="0"] .strip-name', 400, {
+	x: other.x + other.width / 2,
+	y: other.y + other.height / 2,
+});
+const after = await names();
+check(
+	"a finger drag still moves a tile",
+	after[0] === before[1] &&
+		after[1] === before[0] &&
+		(await mobile.locator(".ctx-sheet").count()) === 0,
+	`${after[0]}, ${after[1]}`,
+);
+
 const overflow = await mobile.evaluate(
 	() => document.documentElement.scrollWidth > window.innerWidth,
 );

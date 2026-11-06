@@ -11,22 +11,31 @@ import {
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import type { QualityChoice } from "@/shared/quality";
 import { type AppState, type CameraId, uniqueSlug, ViewId } from "@/shared/schema";
+import { type MenuTrigger, triggerAt, useMenuTriggers } from "@/web/components/ContextMenu";
+import { WallMenu, type WallMenuContext } from "@/web/components/ContextMenuHost";
 import { Rail } from "@/web/components/Rail";
 import { SettingsDialog, type SettingsTab } from "@/web/components/Settings";
-import { TOUR_SECONDS, TopBar, type TourSeconds } from "@/web/components/TopBar";
+import { TopBar } from "@/web/components/TopBar";
 import { Dialog } from "@/web/components/ui";
 import { type Fit, Wall } from "@/web/components/Wall";
+import { api } from "@/web/lib/api";
 import { readPref, useMedia, writePref } from "@/web/lib/hooks";
-import { saveSnapshot } from "@/web/lib/snapshot";
+import type { MenuSpec, TileCell } from "@/web/lib/menus";
+import { canCopyImage, copySnapshot, copyText, saveSnapshot } from "@/web/lib/snapshot";
 import {
 	allRefs,
 	cellsPerPage,
+	FULL_TILE,
 	initialWall,
+	menuId,
+	neighbour,
 	pageCount,
 	parseSource,
 	parseTarget,
 	refKey,
 	resolveRef,
+	TOUR_SECONDS,
+	type TourSeconds,
 	type ViewRef,
 	wallReducer,
 } from "@/web/lib/wall";
@@ -43,7 +52,38 @@ const SHORTCUTS: [string, string][] = [
 	["F", "Full screen"],
 	["B", "Show or hide the camera list"],
 	["?", "This list"],
+	["Right click", "Actions for whatever is under the pointer"],
+	["Shift+F10", "The same actions for the selected tile"],
+	["Shift + right click", "The browser's own menu"],
 ];
+
+/** Where the wall's tiles sit right now, read from the page so it matches what is on screen. */
+function readCells(box: HTMLElement | null): { cells: TileCell[]; ratio: number } {
+	const wall = box?.querySelector(".wall-box:not(.wall-full)");
+	if (!box || !wall || box.classList.contains("wall-scroll")) return { cells: [], ratio: 16 / 9 };
+	const outer = wall.getBoundingClientRect();
+	const cells: TileCell[] = [];
+	for (const tile of wall.querySelectorAll<HTMLElement>("[data-tile]")) {
+		const inner = tile.getBoundingClientRect();
+		const index = Number(tile.dataset.tile);
+		cells.push({
+			index,
+			x: (inner.left - outer.left) / outer.width,
+			y: (inner.top - outer.top) / outer.height,
+			w: inner.width / outer.width,
+			h: inner.height / outer.height,
+			camera: null,
+		});
+	}
+	return { cells, ratio: outer.width / outer.height };
+}
+
+type OpenMenu = MenuTrigger & {
+	cells: TileCell[];
+	ratio: number;
+	/** Set when a form supplies its own items, which skips the wall's menus. */
+	spec: MenuSpec | null;
+};
 
 function refFromUrl(state: AppState): ViewRef {
 	const key = new URLSearchParams(location.search).get("view");
@@ -77,6 +117,11 @@ export function Workspace({
 	const [naming, setNaming] = useState(false);
 	const [choices, setChoices] = useState<ReadonlyMap<CameraId, QualityChoice>>(new Map());
 	const [dragging, setDragging] = useState<string | null>(null);
+	const [menu, setMenu] = useState<OpenMenu | null>(null);
+	const [toast, setToast] = useState<string | null>(null);
+	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+	const [restarts, setRestarts] = useState<ReadonlyMap<CameraId, number>>(new Map());
+	const [isFullscreen, setIsFullscreen] = useState(false);
 	const box = useRef<HTMLDivElement>(null);
 	const compact = useMedia("(max-width: 720px)");
 
@@ -112,11 +157,25 @@ export function Workspace({
 		if (next) dispatch({ type: "open", ref: next, state });
 	}, [wall.page, pages, state, key]);
 
+	// The tour waits while a menu is open, so the wall does not change under it.
+	const touring = tour && menu === null;
 	useEffect(() => {
-		if (!tour) return;
+		if (!touring) return;
 		const timer = setInterval(stepTour, tourSeconds * 1000);
 		return () => clearInterval(timer);
-	}, [tour, tourSeconds, stepTour]);
+	}, [touring, tourSeconds, stepTour]);
+
+	useEffect(() => {
+		if (toast === null) return;
+		const timer = setTimeout(() => setToast(null), 2400);
+		return () => clearTimeout(timer);
+	}, [toast]);
+
+	useEffect(() => {
+		const update = () => setIsFullscreen(document.fullscreenElement !== null);
+		document.addEventListener("fullscreenchange", update);
+		return () => document.removeEventListener("fullscreenchange", update);
+	}, []);
 
 	const toggleRail = useCallback(() => {
 		if (compact) {
@@ -134,16 +193,48 @@ export function Workspace({
 		else void document.documentElement.requestFullscreen();
 	}, []);
 
+	const tileVideo = useCallback((index: number) => {
+		const video = box.current?.querySelector(`[data-tile="${index}"] video`);
+		return video instanceof HTMLVideoElement ? video : null;
+	}, []);
+
 	const snapshot = useCallback(
 		(index: number) => {
-			const camera = wall.slots[index];
-			const video = box.current?.querySelector(`[data-tile="${index}"] video`);
-			if (camera && video instanceof HTMLVideoElement) {
-				saveSnapshot({ video, name: cameras.get(camera)?.name ?? camera });
-			}
+			const camera = index === FULL_TILE ? wall.focused : wall.slots[index];
+			const video = tileVideo(index);
+			if (camera && video) saveSnapshot({ video, name: cameras.get(camera)?.name ?? camera });
 		},
-		[wall.slots, cameras],
+		[wall.slots, wall.focused, cameras, tileVideo],
 	);
+
+	const openMenu = useCallback((trigger: MenuTrigger, spec: MenuSpec | null = null) => {
+		const { target } = trigger;
+		if (target.kind === "tile" && target.index !== FULL_TILE) {
+			dispatch({ type: "select", index: target.index });
+		}
+		setMenu({ ...trigger, ...readCells(box.current), spec });
+	}, []);
+
+	const closeMenu = useCallback(() => setMenu(null), []);
+
+	useMenuTriggers({
+		open: openMenu,
+		busy: () => dragging !== null,
+		keyboardAnchor: () => {
+			const tile = wall.focused ? FULL_TILE : wall.selected;
+			return (tile !== null && box.current?.querySelector(`[data-tile="${tile}"]`)) || box.current;
+		},
+	});
+
+	// A menu speaks about one wall, so it goes when that wall does.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: these are the triggers
+	useEffect(() => setMenu(null), [key, wall.page, wall.focused]);
+
+	useEffect(() => {
+		const anchor = menu?.anchor;
+		anchor?.setAttribute("data-menu-open", "");
+		return () => anchor?.removeAttribute("data-menu-open");
+	}, [menu?.anchor]);
 
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
@@ -151,16 +242,14 @@ export function Workspace({
 			const typing =
 				target instanceof HTMLElement &&
 				(target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
-			if (typing || document.querySelector("dialog[open]")) return;
+			if (typing || menu || document.querySelector("dialog[open]")) return;
 			if (event.metaKey || event.ctrlKey || event.altKey) return;
 
 			const first = wall.page * cellsPerPage(wall);
 			const last = first + cellsPerPage(wall) - 1;
 			const step = (delta: number) => {
 				if (wall.focused) {
-					const shown = wall.slots.filter((slot) => slot !== null);
-					const at = shown.indexOf(wall.focused);
-					const next = shown[(at + delta + shown.length) % shown.length];
+					const next = neighbour(wall, delta);
 					if (next) dispatch({ type: "focus", camera: next });
 					return;
 				}
@@ -202,7 +291,8 @@ export function Workspace({
 					dispatch({ type: "page", page: wall.page + 1 });
 					break;
 				case "s":
-					if (wall.selected !== null) snapshot(wall.selected);
+					if (wall.focused) snapshot(FULL_TILE);
+					else if (wall.selected !== null) snapshot(wall.selected);
 					break;
 				case "t":
 					setTour((value) => !value);
@@ -227,7 +317,7 @@ export function Workspace({
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [wall, state, open, snapshot, fullscreen, toggleRail]);
+	}, [wall, state, menu, open, snapshot, fullscreen, toggleRail]);
 
 	const sensors = useSensors(
 		useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -246,8 +336,20 @@ export function Workspace({
 		setDragging(camera ? (cameras.get(camera)?.name ?? null) : null);
 	};
 
-	const onDragEnd = ({ active, over }: DragEndEvent) => {
+	const onDragEnd = ({ active, over, delta, activatorEvent }: DragEndEvent) => {
 		setDragging(null);
+		// Holding a finger still lifts a tile before the menu timer fires, so letting go
+		// without moving asks for the menu. A drag that goes somewhere still drags.
+		const touched = "TouchEvent" in window && activatorEvent instanceof TouchEvent;
+		if (touched && Math.hypot(delta.x, delta.y) < 8) {
+			const touch = activatorEvent.touches[0];
+			const element = activatorEvent.target;
+			if (touch && element instanceof Element) {
+				const trigger = triggerAt(element, touch.clientX, touch.clientY);
+				if (trigger) openMenu(trigger);
+			}
+			return;
+		}
 		const source = parseSource(active.id);
 		const target = over ? parseTarget(over.id) : null;
 		if (!source || !target) return;
@@ -300,6 +402,100 @@ export function Workspace({
 		setNaming(false);
 	};
 
+	const toggleFit = () =>
+		setFit((value) => {
+			const next = value === "fit" ? "fill" : "fit";
+			writePref("fit", next);
+			return next;
+		});
+
+	const tourEvery = (seconds: TourSeconds) => {
+		setTourSeconds(seconds);
+		writePref("tourSeconds", String(seconds));
+	};
+
+	const toggleGroup = (name: string) =>
+		setCollapsed((previous) => {
+			const next = new Set(previous);
+			if (!next.delete(name)) next.add(name);
+			return next;
+		});
+
+	const report = (work: Promise<boolean>, done: string, failed: string) => {
+		work.then(
+			(ok) => setToast(ok ? done : failed),
+			() => setToast(failed),
+		);
+	};
+
+	const menuContext: WallMenuContext = {
+		state,
+		wall,
+		choices,
+		pages: wall.focused ? 1 : pages,
+		fit,
+		tour,
+		tourSeconds,
+		railVisible: compact ? drawerOpen : railOpen,
+		fullscreen: isFullscreen,
+		collapsed,
+		can: {
+			copyImage: canCopyImage(),
+			popOut: document.pictureInPictureEnabled === true,
+		},
+		hasFrame: (index) => (tileVideo(index)?.videoWidth ?? 0) > 0,
+		run: {
+			// These change the wall, and Settings would hide the result.
+			dispatch: (action) => {
+				setSettings(null);
+				dispatch(action);
+			},
+			commit,
+			open: (ref) => {
+				setSettings(null);
+				open(ref);
+			},
+			removeCamera: (camera) => {
+				api.removeCamera(camera).then(onLoaded, () => setToast("That camera stayed: no answer."));
+			},
+			snapshot,
+			copySnapshot: (index) => {
+				const video = tileVideo(index);
+				if (video) report(copySnapshot(video), "Snapshot copied", "Copying the snapshot failed");
+			},
+			popOut: (index) => {
+				tileVideo(index)
+					?.requestPictureInPicture()
+					.catch(() => setToast("This browser refused to pop out the picture"));
+			},
+			reconnect: (list) => {
+				setRestarts((previous) => {
+					const next = new Map(previous);
+					for (const camera of list) next.set(camera, (next.get(camera) ?? 0) + 1);
+					return next;
+				});
+			},
+			choose: (camera, choice) => setChoices((previous) => new Map(previous).set(camera, choice)),
+			save: saveCurrent,
+			saveAs,
+			revert: () => open(wall.ref),
+			toggleFit,
+			toggleTour: () => setTour((value) => !value),
+			tourEvery,
+			toggleRail,
+			toggleFullscreen: fullscreen,
+			help: () => setHelp(true),
+			addCameras: () => setSettings("Add cameras"),
+			settings: () => setSettings("Cameras"),
+			copyLink: (ref) => {
+				const url = new URL(location.href);
+				url.searchParams.set("view", refKey(ref));
+				report(copyText(url.href), "Link copied", "Copying the link failed");
+			},
+			collapse: (keys) => setCollapsed(new Set(keys)),
+		},
+	};
+
 	const shell = ["app"];
 	if (!railOpen) shell.push("app-no-rail");
 	const title = wall.focused
@@ -322,6 +518,8 @@ export function Workspace({
 					current={key}
 					open={compact ? drawerOpen : railOpen}
 					dragging={dragging !== null}
+					collapsed={collapsed}
+					onToggle={toggleGroup}
 					onOpen={open}
 					onPick={pickCamera}
 					onAdd={() => setSettings("Add cameras")}
@@ -329,6 +527,7 @@ export function Workspace({
 				/>
 				<TopBar
 					title={title}
+					titleMenu={wall.focused ? menuId.camera(wall.focused) : menuId.view(wall.ref)}
 					edited={wall.edited && !wall.focused}
 					savedView={resolved?.saved != null}
 					layout={wall.layout}
@@ -340,25 +539,20 @@ export function Workspace({
 					onRail={toggleRail}
 					onPage={(page) => dispatch({ type: "page", page })}
 					onLayout={(layout) => dispatch({ type: "layout", layout })}
-					onFit={() =>
-						setFit((value) => {
-							const next = value === "fit" ? "fill" : "fit";
-							writePref("fit", next);
-							return next;
-						})
-					}
+					onFit={toggleFit}
 					onTour={() => setTour((value) => !value)}
-					onTourSeconds={(seconds) => {
-						setTourSeconds(seconds);
-						writePref("tourSeconds", String(seconds));
-					}}
+					onTourSeconds={tourEvery}
 					onSave={saveCurrent}
 					onSaveAs={() => setNaming(true)}
 					onRevert={() => open(wall.ref)}
 					onFullscreen={fullscreen}
 					onHelp={() => setHelp(true)}
 				/>
-				<main className={compact && !wall.focused ? "wall wall-scroll" : "wall"} ref={box}>
+				<main
+					className={compact && !wall.focused ? "wall wall-scroll" : "wall"}
+					ref={box}
+					data-menu={menuId.wall}
+				>
 					{state.cameras.length === 0 ? (
 						<div className="empty">
 							<h2>Add your first camera</h2>
@@ -381,6 +575,7 @@ export function Workspace({
 							fit={fit}
 							compact={compact}
 							choices={choices}
+							restarts={restarts}
 							onSelect={(index) =>
 								dispatch({ type: "select", index: wall.selected === index ? null : index })
 							}
@@ -402,6 +597,20 @@ export function Workspace({
 					initialTab={settings}
 					commit={commit}
 					onLoaded={onLoaded}
+					onMenu={(event, spec) => {
+						event.preventDefault();
+						const trigger = triggerAt(event.currentTarget, event.clientX, event.clientY);
+						openMenu(
+							trigger ?? {
+								target: { kind: "wall" },
+								x: event.clientX,
+								y: event.clientY,
+								anchor: event.currentTarget,
+								keyboard: false,
+							},
+							spec,
+						);
+					}}
 					onClose={() => setSettings(null)}
 				/>
 			)}
@@ -436,6 +645,25 @@ export function Workspace({
 						</button>
 					</form>
 				</Dialog>
+			)}
+			{menu && (
+				<WallMenu
+					target={menu.target}
+					spec={menu.spec}
+					x={menu.x}
+					y={menu.y}
+					keyboard={menu.keyboard}
+					sheet={compact}
+					cells={menu.cells}
+					ratio={menu.ratio}
+					context={menuContext}
+					onClose={closeMenu}
+				/>
+			)}
+			{toast && (
+				<output className="toast" aria-live="polite">
+					{toast}
+				</output>
 			)}
 		</DndContext>
 	);

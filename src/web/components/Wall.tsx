@@ -4,12 +4,11 @@ import { pickQuality, type QualityChoice } from "@/shared/quality";
 import type { CameraId, PublicCamera } from "@/shared/schema";
 import { Tile } from "@/web/components/Tile";
 import { usePageVisible, useSize } from "@/web/lib/hooks";
-import { cellsPerPage, type WallState } from "@/web/lib/wall";
+import { cellsPerPage, FULL_TILE, type WallState } from "@/web/lib/wall";
 
 const GAP = 3;
 const STRIP = 26;
 const RATIO = 16 / 9;
-const FULL_TILE = -1;
 
 export type Fit = "fit" | "fill";
 
@@ -42,6 +41,7 @@ export function Wall({
 	fit,
 	compact,
 	choices,
+	restarts,
 	onSelect,
 	onFocus,
 	onClear,
@@ -53,6 +53,7 @@ export function Wall({
 	fit: Fit;
 	compact: boolean;
 	choices: ReadonlyMap<CameraId, QualityChoice>;
+	restarts: ReadonlyMap<CameraId, number>;
 	onSelect: (index: number) => void;
 	onFocus: (camera: CameraId | null) => void;
 	onClear: (index: number) => void;
@@ -134,6 +135,7 @@ export function Wall({
 					selected={false}
 					full
 					active={active}
+					restart={restarts.get(focused.id) ?? 0}
 					onSelect={() => undefined}
 					onOpen={() => undefined}
 					onClose={() => onFocus(null)}
@@ -172,6 +174,7 @@ export function Wall({
 							selected={wall.selected === tile.index}
 							full={false}
 							active={active}
+							restart={(camera && restarts.get(camera.id)) ?? 0}
 							onSelect={() => (compact && camera ? onFocus(camera.id) : onSelect(tile.index))}
 							onOpen={() => camera && onFocus(camera.id)}
 							onClose={() => onFocus(null)}
