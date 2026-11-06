@@ -1,0 +1,28 @@
+# go2rtc publishes no port on purpose. Its API can run commands, so only camwall may reach it.
+services:
+  camwall:
+    build: .
+    restart: unless-stopped
+    depends_on: [go2rtc]
+    ports:
+      - "127.0.0.1:${CAMWALL_PORT:-8090}:8090"
+    environment:
+      CAMWALL_ALLOWED_ORIGINS: ${CAMWALL_ALLOWED_ORIGINS:-}
+    volumes:
+      - camwall-data:/data
+
+  go2rtc:
+    image: alexxit/go2rtc:1.9.14
+    restart: unless-stopped
+    command:
+      - go2rtc
+      - -config
+      - '{"api":{"listen":":1984"},"rtsp":{"listen":""},"webrtc":{"listen":""}}'
+      - -config
+      - /config/go2rtc.yaml
+    volumes:
+      - go2rtc-config:/config
+
+volumes:
+  camwall-data:
+  go2rtc-config:

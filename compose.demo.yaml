@@ -1,0 +1,21 @@
+# Test patterns instead of cameras:
+#   docker compose -f compose.yaml -f compose.demo.yaml up --build
+services:
+  camwall:
+    environment:
+      CAMWALL_ALLOW_VIRTUAL: "1"
+    volumes:
+      - ./demo/config.json:/demo/config.json:ro
+    command:
+      - sh
+      - -c
+      - cp -n /demo/config.json /data/config.json; exec bun src/server/index.ts
+
+  # go2rtc feeds ffmpeg's output back through its own RTSP server, so the demo needs it on.
+  go2rtc:
+    command:
+      - go2rtc
+      - -config
+      - '{"api":{"listen":":1984"},"rtsp":{"listen":"127.0.0.1:8554"},"webrtc":{"listen":""}}'
+      - -config
+      - /config/go2rtc.yaml

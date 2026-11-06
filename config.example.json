@@ -1,0 +1,14 @@
+{
+	"version": 1,
+	"groups": [{ "id": "outside", "name": "Outside" }],
+	"cameras": [
+		{
+			"id": "driveway",
+			"name": "Driveway",
+			"groupId": "outside",
+			"main": "rtsp://user:password@192.0.2.10:554/stream1",
+			"sub": "rtsp://user:password@192.0.2.10:554/stream2"
+		}
+	],
+	"views": []
+}

@@ -1,0 +1,39 @@
+{
+	"name": "camwall",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"license": "MIT",
+	"scripts": {
+		"dev": "bun run --parallel dev:server dev:web",
+		"dev:server": "bun --watch src/server/index.ts",
+		"dev:web": "vite",
+		"build": "vite build",
+		"start": "bun src/server/index.ts",
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"format": "biome check --write .",
+		"test": "bun test tests",
+		"e2e": "node e2e/smoke.mjs"
+	},
+	"dependencies": {
+		"@dnd-kit/core": "^6.3.1",
+		"@fontsource/barlow": "^5.3.0",
+		"@fontsource/barlow-semi-condensed": "^5.3.0",
+		"lucide-react": "^1.70.0",
+		"react": "^19.3.1",
+		"react-dom": "^19.3.1",
+		"zod": "^4.6.7"
+	},
+	"devDependencies": {
+		"@biomejs/biome": "^2.6.6",
+		"@types/bun": "^1.4.4",
+		"@types/react": "^19.3.0",
+		"@types/react-dom": "^19.3.0",
+		"@vitejs/plugin-react": "^6.2.1",
+		"playwright-core": "^1.65.0",
+		"typescript": "^7.0.2",
+		"vite": "^8.3.6"
+	},
+	"description": "A browser video wall for RTSP cameras and DVRs, with layouts, groups and saved views."
+}

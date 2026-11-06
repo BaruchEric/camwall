@@ -1,0 +1,90 @@
+# Camwall
+
+A browser video wall for RTSP cameras and recorders. Point it at a DVR, and every channel plays live in one page, arranged however you want.
+
+![The wall showing twelve test patterns in three groups](docs/wall.jpg)
+
+Most recorders ship a Windows client or a plugin that stopped working years ago. Camwall needs a browser. It runs next to the recorder in two containers, and anything that can reach the page can watch: a desktop, a TV stick, a phone.
+
+## What it does
+
+- **Layouts.** Eleven of them, from one tile to 25, including large-plus-small arrangements. Auto picks the column count that makes tiles largest in the current window. Cameras that don't fit a layout go on further pages.
+- **Groups.** File cameras under names like Parking or Warehouse. Each group opens as its own wall. Drag a camera onto a group to refile it.
+- **Saved views.** Drag cameras onto tiles, swap tiles, then save the arrangement under a name. Links keep the view, so `?view=group:yard` makes a good kiosk bookmark.
+- **Tour.** Steps through pages and views every 5 to 60 seconds.
+- **Two streams per camera.** Tiles use the recorder's small stream. The largest tiles and full view switch to the big one, four at most, and you can force either per tile.
+- **Find cameras over ONVIF.** Enter a recorder's address and tick the channels you want. Pasting an RTSP address works too.
+- **Bandwidth care.** Only tiles on screen pull video, a hidden tab pulls nothing, and streams open four at a time so a slow recorder isn't hit with every channel at once.
+- **Phones.** The camera list becomes a drawer and the wall scrolls in two columns.
+
+![A saved view with one large tile and five small ones](docs/view.jpg)
+
+Press `?` in the app for the keyboard shortcuts.
+
+It shows live video only. There is no recording, playback, motion detection or audio.
+
+## Try it with test patterns
+
+You need Docker. This starts twelve fake cameras, with no hardware involved:
+
+```sh
+docker compose -f compose.yaml -f compose.demo.yaml up --build
+```
+
+Open http://127.0.0.1:8090.
+
+## Run it with your cameras
+
+```sh
+docker compose up -d --build
+```
+
+Open http://127.0.0.1:8090 and choose Add cameras. Set `CAMWALL_PORT` to use another port.
+
+To write the config by hand instead, start from `config.example.json` and place it at `/data/config.json` in the `camwall` container. A camera's `sub` is its low resolution stream. Leave it `null` if the camera has only one.
+
+The host running Camwall must be able to reach the cameras' RTSP port. Streams must be H.264, because that is what browsers play through Media Source Extensions.
+
+| Variable                  | Default              | Meaning                                                                                               |
+| ------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------- |
+| `CAMWALL_PORT`            | `8090`               | Port on the host, in `compose.yaml`                                                                   |
+| `CAMWALL_ALLOWED_ORIGINS` | empty                | Comma-separated origins allowed besides the page's own host, for a reverse proxy that rewrites `Host` |
+| `CAMWALL_DATA`            | `/data`              | Where `config.json` lives                                                                             |
+| `GO2RTC_URL`              | `http://go2rtc:1984` | The go2rtc API                                                                                        |
+
+## Security
+
+**Camwall has no login.** Anyone who reaches the page can watch every camera and change the setup. The compose file binds to `127.0.0.1` for that reason. To share it, put it behind a VPN such as Tailscale, or behind a reverse proxy that does authentication. Don't publish it to the internet as it stands.
+
+What it does protect:
+
+- go2rtc has no published port, because its API can run commands. Only the Camwall server talks to it.
+- Browsers name a camera and a quality, never a stream source. The server maps that to a go2rtc stream, and it forwards nothing from the browser except the codec list.
+- New cameras must be `rtsp://` or `rtsps://` addresses. `exec:`, `ffmpeg:` and `#` options are refused, in the API and in `config.json`.
+- Stream addresses, which can hold passwords, never reach the browser. They sit in `config.json` with mode 600, and go2rtc keeps its own copy in its config volume.
+- Writes and video sockets from another site's page are refused by an Origin check.
+
+## How it works
+
+```
+browser ── /ws/:camera/:quality ──> camwall (Bun) ──> go2rtc ── RTSP ──> recorder
+        <── fragmented MP4 ───────
+```
+
+go2rtc pulls each stream once, however many people watch, and repackages H.264 as fragmented MP4 with no transcoding. The browser feeds that into Media Source Extensions and keeps playback within about 2.5 seconds of live. The server syncs go2rtc's stream list from `config.json` on start, on every change, and every 15 seconds.
+
+## Development
+
+Uses [Bun](https://bun.sh). Start go2rtc somewhere, then:
+
+```sh
+bun install
+GO2RTC_URL=http://127.0.0.1:1984 bun run dev   # app on :5173, API on :8090
+bun run typecheck && bun run lint && bun run test && bun run build
+```
+
+`bun run e2e` drives the demo stack in Chrome and needs Node and a local Chrome.
+
+## License
+
+MIT
