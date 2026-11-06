@@ -89,13 +89,16 @@ export type TileCell = {
 	camera: CameraId | null;
 };
 
-export type MenuAction = {
+/** What sits at a row's left edge. A row has one of these, never two. */
+type MenuMark =
+	| { icon?: LucideIcon; tally?: never; glyph?: never }
+	/** A camera's tally light. */
+	| { tally: PlayerState; icon?: never; glyph?: never }
+	| { glyph: LayoutId; icon?: never; tally?: never };
+
+export type MenuAction = MenuMark & {
 	kind: "action";
 	label: string;
-	icon?: LucideIcon;
-	/** Shows a camera's tally light where the icon would go. */
-	tally?: PlayerState;
-	glyph?: LayoutId;
 	note?: string | undefined;
 	keys?: string | undefined;
 	checked?: boolean;

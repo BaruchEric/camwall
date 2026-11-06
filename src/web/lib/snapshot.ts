@@ -40,10 +40,10 @@ export function canCopyImage(): boolean {
 	return window.isSecureContext && "ClipboardItem" in window;
 }
 
+/** The frame goes in as a promise, because Safari refuses a write that follows an await. */
 export async function copySnapshot(video: HTMLVideoElement): Promise<boolean> {
-	const blob = await grabFrame(video);
-	if (!blob) return false;
-	await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+	const png = grabFrame(video).then((blob) => blob ?? Promise.reject(new Error("No picture")));
+	await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
 	return true;
 }
 
