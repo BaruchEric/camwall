@@ -33,7 +33,7 @@ function openNext(): void {
 	}
 }
 
-function mediaSource(): { source: MediaSource; managed: boolean } {
+export function mediaSource(): { source: MediaSource; managed: boolean } {
 	if ("ManagedMediaSource" in window) return { source: new ManagedMediaSource(), managed: true };
 	return { source: new MediaSource(), managed: false };
 }

@@ -476,6 +476,82 @@ const overflow = await mobile.evaluate(
 );
 check("the phone layout has no sideways scroll", !overflow);
 
+// Playback, from the demo stack's stand-in recorder. Side door records ten minutes an hour.
+{
+	const replay = await context.newPage();
+	replay.on("pageerror", (error) => errors.push(error.message));
+	const playhead = () => replay.evaluate(() => document.querySelector(".replay video").currentTime);
+	const replayNote = () => replay.locator(".replay .picture-note").textContent({ timeout: 500 });
+	async function waitPlayhead(test, timeout) {
+		const end = Date.now() + timeout;
+		while (Date.now() < end) {
+			if (test(await playhead())) return true;
+			await replay.waitForTimeout(250);
+		}
+		return false;
+	}
+	await replay.goto(base);
+	await replay.waitForSelector(".tile");
+	await replay
+		.locator(".tile")
+		.nth(1)
+		.click({ position: { x: 60, y: 60 } });
+	await replay.keyboard.press("p");
+	await replay.waitForSelector(".replay");
+	const opened = await waitPlayhead((time) => time > 0, 15_000);
+	const first = await playhead();
+	check("P opens the camera's recordings", opened, `at ${first.toFixed(1)} s`);
+	check("playback moves", await waitPlayhead((time) => time > first + 1, 6_000));
+	await replay.keyboard.press(" ");
+	await replay.waitForTimeout(600);
+	const held = await playhead();
+	await replay.waitForTimeout(1200);
+	check("Space pauses", (await playhead()) === held);
+	await replay.keyboard.press(" ");
+
+	await replay.locator(".replay-bar .chip", { hasText: "8x" }).click();
+	const noted = await waitPlayhead(() => false, 12_000).then(() => replayNote().catch(() => ""));
+	check("the replay stops at the end of the footage", noted.includes("No more footage"), noted);
+	await replay.waitForTimeout(1500);
+	const stayed = await replayNote().catch(() => "");
+	check("the end message stays up", stayed.includes("No more footage"), stayed);
+
+	const bar = await replay.locator(".replay-timeline").boundingBox();
+	await replay.mouse.click(bar.x + bar.width * 0.0063, bar.y + 12);
+	check(
+		"playback crosses a gap in the footage",
+		await waitPlayhead((time) => time >= 3600 && time < 7200, 25_000),
+	);
+	await replay.locator(".replay-bar .chip", { hasText: "1x" }).click();
+
+	await replay.keyboard.press("]");
+	await replay.waitForTimeout(2500);
+	const stamp = await replay.locator(".replay-stamp").textContent();
+	check(
+		"the next camera keeps the moment",
+		stamp.startsWith("Lobby") && stamp.includes("01:0"),
+		stamp,
+	);
+	await replay.screenshot({ path: join(out, "replay.png") });
+
+	await replay.setViewportSize({ width: 390, height: 780 });
+	await replay.waitForTimeout(400);
+	const replayOverflow = await replay.evaluate(
+		() => document.documentElement.scrollWidth > window.innerWidth,
+	);
+	check("the replay fits a phone", !replayOverflow);
+	await replay.setViewportSize({ width: 1600, height: 900 });
+	await replay.keyboard.press("Escape");
+	await replay.waitForSelector(".tile");
+	check("Esc goes back to the wall", (await replay.locator(".replay").count()) === 0);
+
+	await replay.locator('[aria-label="Settings"]').click();
+	await replay.locator(".dialog button", { hasText: "Recorders" }).click();
+	const linked = await replay.locator(".recorder-row").textContent();
+	check("Settings lists the recorder", linked.includes("12 cameras linked"), linked);
+	await replay.close();
+}
+
 const light = await browser.newContext({
 	viewport: { width: 1280, height: 800 },
 	colorScheme: "light",

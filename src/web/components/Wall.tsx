@@ -46,6 +46,7 @@ export function Wall({
 	onFocus,
 	onClear,
 	onChoice,
+	onReplay,
 }: {
 	box: RefObject<HTMLDivElement | null>;
 	wall: WallState;
@@ -58,6 +59,7 @@ export function Wall({
 	onFocus: (camera: CameraId | null) => void;
 	onClear: (index: number) => void;
 	onChoice: (camera: CameraId, choice: QualityChoice) => void;
+	onReplay: (camera: CameraId) => void;
 }) {
 	const { width, height } = useSize(box);
 	const active = usePageVisible();
@@ -141,6 +143,7 @@ export function Wall({
 					onClose={() => onFocus(null)}
 					onClear={() => undefined}
 					onChoice={(choice) => onChoice(focused.id, choice)}
+					onReplay={() => onReplay(focused.id)}
 				/>
 			</div>
 		);
@@ -180,6 +183,7 @@ export function Wall({
 							onClose={() => onFocus(null)}
 							onClear={() => onClear(tile.index)}
 							onChoice={(choice) => camera && onChoice(camera.id, choice)}
+							onReplay={() => camera && onReplay(camera.id)}
 						/>
 					</div>
 				);

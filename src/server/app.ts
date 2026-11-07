@@ -1,17 +1,27 @@
 import { join, normalize, sep } from "node:path";
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import { z } from "zod";
+import { readDays, readSpans, testRecorder } from "@/server/dvr/client";
 import { type Go2rtc, streamName } from "@/server/go2rtc";
 import { log } from "@/server/log";
 import { discover } from "@/server/onvif";
+import { ReplaySession } from "@/server/replay";
 import type { Store } from "@/server/store";
 import {
 	applyPatch,
 	type Camera,
 	CameraId,
+	type Config,
+	DAY_MS,
+	Day,
 	DiscoverRequest,
 	ImportRequest,
+	linkCameras,
+	NewRecorder,
 	Quality,
+	type Recorder,
+	RecorderId,
+	ReplayCommand,
 	StatePatch,
 	toPublic,
 	uniqueSlug,
@@ -33,11 +43,20 @@ const CSP = [
 
 const MseHello = z.object({ type: z.literal("mse"), value: z.string().max(512) });
 
-export type SocketData = {
+type LiveSocket = {
+	kind: "live";
 	target: string;
 	upstream: WebSocket | null;
 	hello: string | null;
 };
+
+type ReplaySocket = {
+	kind: "replay";
+	source: { recorder: Recorder; channel: number; quality: Quality; day: string; ms: number };
+	session: ReplaySession | null;
+};
+
+export type SocketData = LiveSocket | ReplaySocket;
 
 export type AppDeps = {
 	store: Store;
@@ -68,6 +87,13 @@ async function readJson(request: Request): Promise<unknown> {
 	} catch {
 		return null;
 	}
+}
+
+/** A camera's recorder and channel, if it has recordings. */
+function replaySource(config: Config, id: string | undefined) {
+	const camera = config.cameras.find((c) => c.id === id);
+	const recorder = config.recorders.find((r) => r.id === camera?.replay?.recorder);
+	return camera?.replay && recorder ? { recorder, channel: camera.replay.channel } : null;
 }
 
 function firstIssue(error: z.ZodError): string {
@@ -126,9 +152,14 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 						id: CameraId.parse(slug),
 						main: withCredentials(camera.main, user, password),
 						sub: camera.sub === null ? null : withCredentials(camera.sub, user, password),
+						replay: null,
 					};
 				});
-				return { ...config, cameras: [...config.cameras, ...added] };
+				const all = [...config.cameras, ...added];
+				return {
+					...config,
+					cameras: config.recorders.reduce((list, r) => linkCameras(list, r), all),
+				};
 			});
 			return json(toPublic(next), 201);
 		}
@@ -153,27 +184,130 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 			}
 		}
 
+		if (route === "POST /api/recorders") {
+			const body = NewRecorder.safeParse(await readJson(request));
+			if (!body.success) return problem(firstIssue(body.error), 400);
+			try {
+				await testRecorder(body.data);
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "The recorder did not answer";
+				return problem(message, 502);
+			}
+			const next = await store.update((config) => {
+				const taken = new Set<string>(config.recorders.map((r) => r.id));
+				const id = RecorderId.parse(uniqueSlug(body.data.name, taken));
+				const recorder: Recorder = { ...body.data, id };
+				return {
+					...config,
+					recorders: [...config.recorders, recorder],
+					cameras: linkCameras(config.cameras, recorder),
+				};
+			});
+			return json(toPublic(next), 201);
+		}
+
+		const forget = /^\/api\/recorders\/([^/]+)$/.exec(pathname);
+		if (request.method === "DELETE" && forget) {
+			const next = await store.update((config) => ({
+				...config,
+				recorders: config.recorders.filter((r) => r.id !== forget[1]),
+			}));
+			return json(toPublic(next));
+		}
+
+		const days = /^\/api\/replay\/([^/]+)\/days$/.exec(pathname);
+		const spans = /^\/api\/replay\/([^/]+)\/day\/([^/]+)$/.exec(pathname);
+		if (request.method === "GET" && (days || spans)) {
+			const source = replaySource(store.config, (days ?? spans)?.[1]);
+			if (!source) return problem("That camera has no recordings", 404);
+			try {
+				if (days) return json({ days: await readDays(source.recorder) });
+				const day = Day.safeParse(spans?.[2]);
+				if (!day.success) return problem("Use a date like 2026-01-31", 400);
+				return json({ spans: await readSpans(source.recorder, day.data, source.channel) });
+			} catch (error) {
+				const message = error instanceof Error ? error.message : "The recorder did not answer";
+				return problem(message, 502);
+			}
+		}
+
 		return problem("Not found", 404);
 	}
 
+	function upgradeReplay(
+		request: Request,
+		server: Server<SocketData>,
+		url: URL,
+		match: RegExpExecArray,
+	): Response | undefined {
+		const source = replaySource(store.config, match[1]);
+		if (!source) return problem("That camera has no recordings", 404);
+		const quality = Quality.safeParse(match[2]);
+		const day = Day.safeParse(url.searchParams.get("day"));
+		const ms = Number(url.searchParams.get("ms"));
+		if (!quality.success || !day.success || !Number.isInteger(ms) || ms < 0 || ms >= DAY_MS) {
+			return problem("Not found", 404);
+		}
+		const data: SocketData = {
+			kind: "replay",
+			source: { ...source, quality: quality.data, day: day.data, ms },
+			session: null,
+		};
+		return server.upgrade(request, { data }) ? undefined : problem("Upgrade failed", 400);
+	}
+
 	function upgrade(request: Request, server: Server<SocketData>, url: URL): Response | undefined {
+		const replay = /^\/ws\/replay\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+		if (replay) return upgradeReplay(request, server, url, replay);
 		const match = /^\/ws\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 		const id = CameraId.safeParse(match?.[1]);
 		const quality = Quality.safeParse(match?.[2]);
 		if (!id.success || !quality.success) return problem("Not found", 404);
 		if (!store.config.cameras.some((c) => c.id === id.data)) return problem("No such camera", 404);
 		const target = go2rtc.wsUrl(streamName(id.data, quality.data));
-		const data: SocketData = { target, upstream: null, hello: null };
+		const data: SocketData = { kind: "live", target, upstream: null, hello: null };
 		return server.upgrade(request, { data }) ? undefined : problem("Upgrade failed", 400);
+	}
+
+	function openReplaySocket(ws: ServerWebSocket<SocketData>, data: ReplaySocket): void {
+		const { recorder, channel, quality, day, ms } = data.source;
+		const session = new ReplaySession(
+			{ address: recorder, channel, quality, day, ms },
+			{
+				event: (event) => ws.send(JSON.stringify(event)),
+				bytes: (bytes) => ws.sendBinary(bytes),
+				queued: () => ws.getBufferedAmount(),
+				close: () => ws.close(),
+			},
+		);
+		data.session = session;
+		void session.start();
+	}
+
+	function replayMessage(data: ReplaySocket, message: string | Buffer): void {
+		if (typeof message !== "string") return;
+		let parsed: unknown = null;
+		try {
+			parsed = JSON.parse(message);
+		} catch {
+			return;
+		}
+		const command = ReplayCommand.safeParse(parsed);
+		if (command.success) data.session?.handle(command.data);
 	}
 
 	const websocket: WebSocketHandler<SocketData> = {
 		open(ws: ServerWebSocket<SocketData>) {
-			const upstream = new WebSocket(ws.data.target);
+			const { data } = ws;
+			if (data.kind === "replay") {
+				openReplaySocket(ws, data);
+				return;
+			}
+			const upstream = new WebSocket(data.target);
 			upstream.binaryType = "arraybuffer";
-			ws.data.upstream = upstream;
+			data.upstream = upstream;
 			upstream.onopen = () => {
-				if (ws.data.hello !== null) upstream.send(ws.data.hello);
+				if (data.hello !== null) upstream.send(data.hello);
 			};
 			upstream.onmessage = (event: MessageEvent<string | ArrayBuffer>) => {
 				if (ws.getBufferedAmount() > MAX_BUFFERED) {
@@ -186,6 +320,11 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 			upstream.onerror = () => ws.close();
 		},
 		message(ws: ServerWebSocket<SocketData>, message: string | Buffer) {
+			const { data } = ws;
+			if (data.kind === "replay") {
+				replayMessage(data, message);
+				return;
+			}
 			if (typeof message !== "string") return;
 			let parsed: unknown = null;
 			try {
@@ -195,12 +334,14 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 			}
 			// The only thing a viewer may say to go2rtc: which codecs it can play.
 			if (!MseHello.safeParse(parsed).success) return;
-			const { upstream } = ws.data;
+			const { upstream } = data;
 			if (upstream?.readyState === WebSocket.OPEN) upstream.send(message);
-			else ws.data.hello = message;
+			else data.hello = message;
 		},
 		close(ws: ServerWebSocket<SocketData>) {
-			ws.data.upstream?.close();
+			const { data } = ws;
+			if (data.kind === "replay") data.session?.stop();
+			else data.upstream?.close();
 		},
 	};
 

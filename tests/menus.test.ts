@@ -27,11 +27,13 @@ import {
 const id = (value: string) => CameraId.parse(value);
 
 const state = AppState.parse({
+	recorders: [],
 	cameras: ["a", "b", "c", "d", "e"].map((name, i) => ({
 		id: name,
 		name: name.toUpperCase(),
 		groupId: i < 2 ? "front" : null,
 		hasSub: name !== "c",
+		hasReplay: false,
 	})),
 	groups: [
 		{ id: "front", name: "Front" },
@@ -67,6 +69,7 @@ function harness(patch: Partial<MenuContext> = {}): Harness {
 		commit: (next) => commits.push(next),
 		open: note("open"),
 		removeCamera: (camera) => calls.push(`remove ${camera}`),
+		replay: note("replay"),
 		snapshot: note("snapshot"),
 		copySnapshot: note("copySnapshot"),
 		popOut: note("popOut"),
@@ -477,7 +480,7 @@ describe("wall menu", () => {
 	});
 
 	test("with no cameras it points at adding some", () => {
-		const empty = AppState.parse({ cameras: [], groups: [], views: [] });
+		const empty = AppState.parse({ cameras: [], groups: [], views: [], recorders: [] });
 		const { ctx } = harness({ state: empty, wall: initialWall({ kind: "all" }, empty) });
 		expect(labels(buildMenu({ kind: "wall" }, ctx).nodes)[0]).toBe("Add cameras");
 	});

@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import type { Server as TcpServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "bun";
 import { createApp, originAllowed, type SocketData } from "@/server/app";
+import { startFakeRecorder } from "@/server/dvr/fake";
 import { Go2rtc } from "@/server/go2rtc";
 import { Store } from "@/server/store";
+import { CameraId } from "@/shared/schema";
 
 type Upstream = { url: string };
 
@@ -231,6 +234,114 @@ describe("stream proxy", () => {
 		expect(response.status).toBe(404);
 		const socket = await fetch(`${base}/api/ws?src=exec:id`);
 		expect(socket.status).toBe(404);
+	});
+});
+
+describe("recorders", () => {
+	let recorder: TcpServer;
+	let port: number;
+
+	beforeAll(async () => {
+		recorder = await startFakeRecorder(join(import.meta.dir, "../demo"), 0);
+		const address = recorder.address();
+		port = typeof address === "object" && address ? address.port : 0;
+		await store.update((config) => ({
+			...config,
+			cameras: [
+				...config.cameras,
+				{
+					id: CameraId.parse("yard"),
+					name: "Yard",
+					groupId: null,
+					main: "rtsp://127.0.0.1/mainStream2",
+					sub: null,
+					replay: null,
+				},
+			],
+		}));
+	});
+
+	afterAll(() => {
+		recorder.close();
+	});
+
+	const post = (body: unknown) =>
+		fetch(`${base}/api/recorders`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+
+	test("one that refuses the connection is not saved", async () => {
+		const response = await post({ name: "Gone", host: "127.0.0.1", port: 1, password: "" });
+		expect(response.status).toBe(502);
+		expect(store.config.recorders).toHaveLength(0);
+	});
+
+	test("adding one links cameras on its address and keeps its password from the browser", async () => {
+		const response = await post({
+			name: "Back room",
+			host: "127.0.0.1",
+			port,
+			password: "hunter2",
+		});
+		expect(response.status).toBe(201);
+		const text = await response.text();
+		expect(text).not.toContain("hunter2");
+		expect(text).not.toContain("127.0.0.1");
+		const state = JSON.parse(text);
+		expect(state.recorders).toEqual([{ id: "back-room", name: "Back room", cameras: 1 }]);
+		const yard = state.cameras.find((camera: { id: string }) => camera.id === "yard");
+		expect(yard.hasReplay).toBe(true);
+		expect(yard.replay).toBeUndefined();
+	});
+
+	test("a linked camera lists its days and a day's recordings", async () => {
+		const days = await (await fetch(`${base}/api/replay/yard/days`)).json();
+		expect(days.days.length).toBeGreaterThan(0);
+		const day = days.days.at(-1);
+		const spans = await (await fetch(`${base}/api/replay/yard/day/${day}`)).json();
+		expect(spans.spans.length).toBeGreaterThan(0);
+	});
+
+	test("a camera with no recorder has nothing to list", async () => {
+		expect((await fetch(`${base}/api/replay/door/days`)).status).toBe(404);
+	});
+
+	test("a date that is not a date is refused", async () => {
+		expect((await fetch(`${base}/api/replay/yard/day/yesterday`)).status).toBe(400);
+	});
+
+	const replayStatus = (path: string, headers?: Record<string, string>) =>
+		fetch(`${base}/ws/replay/${path}`, {
+			headers: {
+				connection: "Upgrade",
+				upgrade: "websocket",
+				"sec-websocket-version": "13",
+				"sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==",
+				...headers,
+			},
+		}).then((response) => response.status);
+
+	test("a replay socket refuses a foreign page", async () => {
+		const status = await replayStatus("yard/sub?day=2026-11-06&ms=0", {
+			origin: "https://evil.example",
+		});
+		expect(status).toBe(403);
+	});
+
+	test("a replay socket refuses a bad day, a bad time and an unlinked camera", async () => {
+		expect(await replayStatus("yard/sub?day=soon&ms=0")).toBe(404);
+		expect(await replayStatus("yard/sub?day=2026-11-06&ms=90000000")).toBe(404);
+		expect(await replayStatus("yard/best?day=2026-11-06&ms=0")).toBe(404);
+		expect(await replayStatus("door/sub?day=2026-11-06&ms=0")).toBe(404);
+	});
+
+	test("removing one takes the links with it", async () => {
+		const response = await fetch(`${base}/api/recorders/back-room`, { method: "DELETE" });
+		const state = await response.json();
+		expect(state.recorders).toEqual([]);
+		expect(state.cameras.every((c: { hasReplay: boolean }) => !c.hasReplay)).toBe(true);
 	});
 });
 

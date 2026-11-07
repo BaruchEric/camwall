@@ -16,6 +16,7 @@ import {
 	FolderOpen,
 	FolderPlus,
 	Grid2x2Plus,
+	History,
 	LayoutGrid,
 	Link,
 	type LucideIcon,
@@ -169,6 +170,7 @@ export type MenuCommands = {
 	commit: (next: AppState) => void;
 	open: (ref: ViewRef) => void;
 	removeCamera: (camera: CameraId) => void;
+	replay: (camera: CameraId) => void;
 	snapshot: (index: number) => void;
 	copySnapshot: (index: number) => void;
 	popOut: (index: number) => void;
@@ -188,6 +190,16 @@ export type MenuCommands = {
 	copyLink: (ref: ViewRef) => void;
 	collapse: (keys: readonly string[]) => void;
 };
+
+function replayAction(camera: PublicCamera, run: MenuCommands): MenuNode {
+	return {
+		kind: "action",
+		label: "Play back recordings",
+		icon: History,
+		keys: "P",
+		run: () => run.replay(camera.id),
+	};
+}
 
 export type MenuContext = {
 	state: AppState;
@@ -511,7 +523,9 @@ function tileMenu(index: number, ctx: MenuContext): MenuSpec {
 			},
 		);
 	}
-	nodes.push(picture(ctx, camera), RULE, {
+	nodes.push(picture(ctx, camera), RULE);
+	if (camera.hasReplay) nodes.push(replayAction(camera, run));
+	nodes.push({
 		kind: "action",
 		label: "Save snapshot",
 		icon: CameraIcon,
@@ -646,6 +660,7 @@ function cameraMenu(id: CameraId, ctx: MenuContext): MenuSpec {
 		icon: Maximize2,
 		run: () => run.dispatch({ type: "focus", camera: id }),
 	});
+	if (camera.hasReplay) nodes.push(replayAction(camera, run));
 	nodes.push(
 		at >= 0
 			? {

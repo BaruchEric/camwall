@@ -15,6 +15,7 @@ Most recorders ship a Windows client or a plugin that stopped working years ago.
 - **Two streams per camera.** Tiles use the recorder's small stream. The largest tiles and full view switch to the big one, four at most, and you can force either per tile.
 - **Find cameras over ONVIF.** Enter a recorder's address and tick the channels you want. Pasting an RTSP address works too.
 - **Bandwidth care.** Only tiles on screen pull video, a hidden tab pulls nothing, and streams open four at a time so a slow recorder isn't hit with every channel at once.
+- **Playback.** Plays a recorder's own archive at full quality, with a calendar, a timeline of what was recorded, speeds to 8x, and a keystroke to follow the same moment onto the next camera. See [Playback](#playback) for the recorders it knows.
 - **Phones.** The camera list becomes a drawer and the wall scrolls in two columns.
 - **Right-click menus.** Every tile, camera, group, view and bar has one, and it changes with what you clicked: a lost camera leads with reconnecting, an empty tile lists what the wall is missing, and a camera's menu holds a small copy of the wall with live frames, so you can press the tile it should go on. Hold a finger down on a phone. Shift + right click gets the browser's own menu.
 
@@ -22,7 +23,7 @@ Most recorders ship a Windows client or a plugin that stopped working years ago.
 
 Press `?` in the app for the keyboard shortcuts.
 
-It shows live video only. There is no recording, playback, motion detection or audio.
+Camwall doesn't record anything itself, and it has no motion detection or audio.
 
 ## Try it with test patterns
 
@@ -53,9 +54,32 @@ The host running Camwall must be able to reach the cameras' RTSP port. Streams m
 | `CAMWALL_DATA`            | `/data`              | Where `config.json` lives                                                                             |
 | `GO2RTC_URL`              | `http://go2rtc:1984` | The go2rtc API                                                                                        |
 
+## Playback
+
+Camwall plays footage that already sits on a recorder. It speaks the private protocol of Unix CCTV and Eyemax Magic recorders, the ones the CMS desktop client talks to on port 8780. Other brands have live view only.
+
+Open Settings, then Recorders, and add the recorder's address. Camwall logs in to check it, then links every camera whose stream comes from that address, reading the channel from paths like `mainStream6`. Press `P` on a tile, or use the tile's clock button or its right-click menu.
+
+| Key             | Does                                 |
+| --------------- | ------------------------------------ |
+| `Space`         | Play or pause                        |
+| `Left`, `Right` | Back or forward 10 seconds           |
+| `[`, `]`        | Previous or next camera, same moment |
+| `S`             | Save a snapshot                      |
+| `Esc`           | Back to the wall                     |
+
+In `config.json` a recorder goes in `recorders`, and a camera points at it with `"replay": { "recorder": "<id>", "channel": 6 }`. Set `replay` by hand when a camera's stream doesn't name its channel.
+
+What to expect:
+
+- It is tested on one recorder: a Magic-U 4M 32 on firmware 2.3.7.11, with a blank admin password. Logging in with a real password follows the same scheme but nobody has tried it, so open an issue if it fails.
+- Playback covers one camera at a time. It doesn't play in reverse or export clips.
+- Gaps in a motion-recorded channel are skipped, not played. Footage from the last few seconds isn't readable yet, so a replay that catches up with the present stops there until you press play again.
+- Speed depends on the link. 8x on the big stream needs about 22 Mbit/s from the recorder to the viewer. Switch to SD if the picture keeps waiting.
+
 ## Security
 
-**Camwall has no login.** Anyone who reaches the page can watch every camera and change the setup. The compose file binds to `127.0.0.1` for that reason. To share it, put it behind a VPN such as Tailscale, or behind a reverse proxy that does authentication. Don't publish it to the internet as it stands.
+**Camwall has no login.** Anyone who reaches the page can watch every camera, browse every recording the recorder still holds, and change the setup. The compose file binds to `127.0.0.1` for that reason. To share it, put it behind a VPN such as Tailscale, or behind a reverse proxy that does authentication. Don't publish it to the internet as it stands.
 
 What it does protect:
 
@@ -64,6 +88,8 @@ What it does protect:
 - New cameras must be `rtsp://` or `rtsps://` addresses. `exec:`, `ffmpeg:` and `#` options are refused, in the API and in `config.json`.
 - Stream addresses, which can hold passwords, never reach the browser. They sit in `config.json` with mode 600, and go2rtc keeps its own copy in its config volume.
 - Writes and video sockets from another site's page are refused by an Origin check.
+- Recorder addresses and passwords stay in `config.json` too. The browser only sees a recorder's name. The recorder's protocol has no encryption and hides its password behind a fixed XOR key, so keep Camwall and the recorder on the same trusted network.
+- Camwall only reads from a recorder. It sends no command that changes or deletes footage.
 
 ## How it works
 
@@ -72,7 +98,16 @@ browser ── /ws/:camera/:quality ──> camwall (Bun) ──> go2rtc ── 
         <── fragmented MP4 ───────
 ```
 
+Playback skips go2rtc:
+
+```
+browser ── /ws/replay/:camera/:quality ──> camwall (Bun) ── port 8780 ──> recorder
+        <── fragmented MP4 ──────────────
+```
+
 go2rtc pulls each stream once, however many people watch, and repackages H.264 as fragmented MP4 with no transcoding. The browser feeds that into Media Source Extensions and keeps playback within about 2.5 seconds of live. The server syncs go2rtc's stream list from `config.json` on start, on every change, and every 15 seconds.
+
+For playback, the server opens one recorder connection per viewer. The recorder only moves forward when asked, so the server asks until it holds six seconds of video ahead of the viewer, then waits. It wraps each H.264 frame in MP4 without transcoding and stamps it with the time of day, so the browser's clock and the timeline agree.
 
 ## Development
 

@@ -1,5 +1,5 @@
 import { useDraggable, useDroppable } from "@dnd-kit/core";
-import { Camera as CameraIcon, Maximize2, Minimize2, VideoOff, X } from "lucide-react";
+import { Camera as CameraIcon, History, Maximize2, Minimize2, VideoOff, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { QualityChoice } from "@/shared/quality";
 import type { PublicCamera, Quality } from "@/shared/schema";
@@ -35,6 +35,7 @@ export type TileProps = {
 	onClose: () => void;
 	onClear: () => void;
 	onChoice: (choice: QualityChoice) => void;
+	onReplay: () => void;
 };
 
 export function Tile({
@@ -51,6 +52,7 @@ export function Tile({
 	onClose,
 	onClear,
 	onChoice,
+	onReplay,
 }: TileProps) {
 	const root = useRef<HTMLDivElement>(null);
 	const video = useRef<HTMLVideoElement>(null);
@@ -173,6 +175,17 @@ export function Tile({
 					>
 						{CHOICE_TEXT[choice]}
 					</button>
+					{camera.hasReplay && (
+						<button
+							type="button"
+							className="strip-tool"
+							title="Play back recordings (P)"
+							aria-label={`Play back recordings from ${camera.name}`}
+							onClick={onReplay}
+						>
+							<History size={14} />
+						</button>
+					)}
 					<button
 						type="button"
 						className="strip-tool"

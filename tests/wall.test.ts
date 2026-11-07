@@ -11,11 +11,13 @@ import {
 } from "@/web/lib/wall";
 
 const state = AppState.parse({
+	recorders: [],
 	cameras: ["a", "b", "c", "d", "e"].map((id, i) => ({
 		id,
 		name: id.toUpperCase(),
 		groupId: i < 2 ? "front" : null,
 		hasSub: true,
+		hasReplay: false,
 	})),
 	groups: [{ id: "front", name: "Front" }],
 	views: [{ id: "pair", name: "Pair", layout: "2", slots: ["c", "d"] }],

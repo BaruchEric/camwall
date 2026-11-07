@@ -14,6 +14,7 @@ import { type AppState, type CameraId, uniqueSlug, ViewId } from "@/shared/schem
 import { type MenuTrigger, triggerAt, useMenuTriggers } from "@/web/components/ContextMenu";
 import { WallMenu, type WallMenuContext } from "@/web/components/ContextMenuHost";
 import { Rail } from "@/web/components/Rail";
+import { ReplayView } from "@/web/components/Replay";
 import { SettingsDialog, type SettingsTab } from "@/web/components/Settings";
 import { TopBar } from "@/web/components/TopBar";
 import { Dialog } from "@/web/components/ui";
@@ -45,6 +46,7 @@ const SHORTCUTS: [string, string][] = [
 	["Enter", "Open the selected tile in full view"],
 	["Esc", "Back to the wall"],
 	["S", "Save a snapshot of the selected tile"],
+	["P", "Play back recordings from the selected tile"],
 	["Delete", "Clear the selected tile"],
 	["[ and ]", "Previous and next page"],
 	["1 to 9", "Jump to a view"],
@@ -122,6 +124,7 @@ export function Workspace({
 	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 	const [restarts, setRestarts] = useState<ReadonlyMap<CameraId, number>>(new Map());
 	const [isFullscreen, setIsFullscreen] = useState(false);
+	const [replay, setReplay] = useState<CameraId | null>(null);
 	const box = useRef<HTMLDivElement>(null);
 	const compact = useMedia("(max-width: 720px)");
 
@@ -140,6 +143,7 @@ export function Workspace({
 
 	const open = useCallback(
 		(ref: ViewRef) => {
+			setReplay(null);
 			dispatch({ type: "open", ref, state });
 			setDrawerOpen(false);
 		},
@@ -158,7 +162,7 @@ export function Workspace({
 	}, [wall.page, pages, state, key]);
 
 	// The tour waits while a menu is open, so the wall does not change under it.
-	const touring = tour && menu === null;
+	const touring = tour && menu === null && replay === null;
 	useEffect(() => {
 		if (!touring) return;
 		const timer = setInterval(stepTour, tourSeconds * 1000);
@@ -242,7 +246,7 @@ export function Workspace({
 			const typing =
 				target instanceof HTMLElement &&
 				(target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
-			if (typing || menu || document.querySelector("dialog[open]")) return;
+			if (typing || menu || replay || document.querySelector("dialog[open]")) return;
 			if (event.metaKey || event.ctrlKey || event.altKey) return;
 
 			const first = wall.page * cellsPerPage(wall);
@@ -294,6 +298,12 @@ export function Workspace({
 					if (wall.focused) snapshot(FULL_TILE);
 					else if (wall.selected !== null) snapshot(wall.selected);
 					break;
+				case "p": {
+					const camera =
+						wall.focused ?? (wall.selected === null ? null : wall.slots[wall.selected]);
+					if (camera && cameras.get(camera)?.hasReplay) setReplay(camera);
+					break;
+				}
 				case "t":
 					setTour((value) => !value);
 					break;
@@ -317,7 +327,7 @@ export function Workspace({
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [wall, state, menu, open, snapshot, fullscreen, toggleRail]);
+	}, [wall, state, menu, replay, cameras, open, snapshot, fullscreen, toggleRail]);
 
 	const sensors = useSensors(
 		useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -458,6 +468,10 @@ export function Workspace({
 			removeCamera: (camera) => {
 				api.removeCamera(camera).then(onLoaded, () => setToast("That camera stayed: no answer."));
 			},
+			replay: (camera) => {
+				setSettings(null);
+				setReplay(camera);
+			},
 			snapshot,
 			copySnapshot: (index) => {
 				const video = tileVideo(index);
@@ -553,7 +567,14 @@ export function Workspace({
 					ref={box}
 					data-menu={menuId.wall}
 				>
-					{state.cameras.length === 0 ? (
+					{replay !== null && cameras.has(replay) ? (
+						<ReplayView
+							camera={replay}
+							cameras={state.cameras.filter((camera) => camera.hasReplay)}
+							onCamera={setReplay}
+							onClose={() => setReplay(null)}
+						/>
+					) : state.cameras.length === 0 ? (
 						<div className="empty">
 							<h2>Add your first camera</h2>
 							<p>
@@ -584,6 +605,7 @@ export function Workspace({
 							onChoice={(camera, choice) =>
 								setChoices((previous) => new Map(previous).set(camera, choice))
 							}
+							onReplay={setReplay}
 						/>
 					)}
 				</main>

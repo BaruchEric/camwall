@@ -11,6 +11,20 @@ services:
       - -c
       - cp -n /demo/config.json /data/config.json; exec bun src/server/index.ts
 
+  # A stand-in recorder, so the demo can show playback. It repeats the clips in demo/.
+  dvr:
+    build: .
+    environment:
+      CAMWALL_CLIPS: /demo
+    volumes:
+      - ./demo:/demo:ro
+    command:
+      - bun
+      - src/server/dvr/fake.ts
+      - "8780"
+    healthcheck:
+      disable: true
+
   # go2rtc feeds ffmpeg's output back through its own RTSP server, so the demo needs it on.
   go2rtc:
     command:

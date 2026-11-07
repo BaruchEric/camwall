@@ -4,6 +4,7 @@ import {
 	type DiscoveredCamera,
 	GroupId,
 	NewCamera,
+	NewRecorder,
 	uniqueSlug,
 } from "@/shared/schema";
 import { ConfirmButton, Dialog, NameField } from "@/web/components/ui";
@@ -11,7 +12,7 @@ import { api } from "@/web/lib/api";
 import { foundMenu, type MenuSpec } from "@/web/lib/menus";
 import { menuId } from "@/web/lib/wall";
 
-export const SETTINGS_TABS = ["Cameras", "Groups", "Views", "Add cameras"] as const;
+export const SETTINGS_TABS = ["Cameras", "Groups", "Views", "Add cameras", "Recorders"] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number];
 
 /** Opens a menu whose items only this form knows about. */
@@ -432,6 +433,103 @@ function ManualForm({ state, onAdded }: { state: AppState; onAdded: (next: AppSt
 	);
 }
 
+function RecordersTab({
+	state,
+	onLoaded,
+}: {
+	state: AppState;
+	onLoaded: (next: AppState) => void;
+}) {
+	const [error, setError] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+	const add = (event: FormEvent<HTMLFormElement>) => {
+		event.preventDefault();
+		const form = event.currentTarget;
+		const data = new FormData(form);
+		const parsed = NewRecorder.safeParse({
+			name: data.get("name"),
+			host: data.get("host"),
+			port: Number(data.get("port")),
+			user: data.get("user"),
+			password: data.get("password"),
+		});
+		if (!parsed.success) {
+			setError(parsed.error.issues[0]?.message ?? "Check the address");
+			return;
+		}
+		setBusy(true);
+		setError(null);
+		api
+			.addRecorder(parsed.data)
+			.then((next) => {
+				onLoaded(next);
+				form.reset();
+			})
+			.catch((cause: unknown) => setError(message(cause)))
+			.finally(() => setBusy(false));
+	};
+	const remove = (id: string) => {
+		setError(null);
+		api.removeRecorder(id).then(onLoaded, (cause: unknown) => setError(message(cause)));
+	};
+	return (
+		<>
+			<p className="hint">
+				Camwall plays footage from Unix CCTV and Eyemax Magic recorders, the kind that use the CMS
+				client. It only reads: it cannot change or delete anything on the recorder. Cameras that
+				stream from the same address are linked by their channel number.
+			</p>
+			{state.recorders.length > 0 && (
+				<ul className="rows">
+					{state.recorders.map((recorder) => (
+						<li key={recorder.id} className="row recorder-row">
+							<span className="recorder-name">{recorder.name}</span>
+							<span className="hint">
+								{recorder.cameras} {recorder.cameras === 1 ? "camera" : "cameras"} linked
+							</span>
+							<ConfirmButton label="Remove" onConfirm={() => remove(recorder.id)} />
+						</li>
+					))}
+				</ul>
+			)}
+			{error && <p className="error">{error}</p>}
+			<form className="form-stack recorder-form" onSubmit={add}>
+				<label>
+					Name
+					<input className="field" name="name" required maxLength={60} defaultValue="Recorder" />
+				</label>
+				<label>
+					Address
+					<input className="field" name="host" required placeholder="192.0.2.10" />
+				</label>
+				<label>
+					Port
+					<input
+						className="field"
+						name="port"
+						type="number"
+						required
+						min={1}
+						max={65535}
+						defaultValue={8780}
+					/>
+				</label>
+				<label>
+					User
+					<input className="field" name="user" defaultValue="admin" autoComplete="off" />
+				</label>
+				<label>
+					Password
+					<input className="field" name="password" type="password" autoComplete="off" />
+				</label>
+				<button type="submit" className="button button-primary" disabled={busy}>
+					{busy ? "Connecting" : "Add recorder"}
+				</button>
+			</form>
+		</>
+	);
+}
+
 export function SettingsDialog({
 	state,
 	initialTab,
@@ -480,6 +578,7 @@ export function SettingsDialog({
 						<ManualForm state={state} onAdded={onLoaded} />
 					</div>
 				)}
+				{tab === "Recorders" && <RecordersTab state={state} onLoaded={onLoaded} />}
 			</div>
 		</Dialog>
 	);

@@ -6,84 +6,132 @@
 			"name": "Front door",
 			"groupId": "entrances",
 			"main": "ffmpeg:virtual?video=testsrc2&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=testsrc2&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=testsrc2&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 1
+			}
 		},
 		{
 			"id": "side-door",
 			"name": "Side door",
 			"groupId": "entrances",
 			"main": "ffmpeg:virtual?video=testsrc&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=testsrc&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=testsrc&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 2
+			}
 		},
 		{
 			"id": "lobby",
 			"name": "Lobby",
 			"groupId": "entrances",
 			"main": "ffmpeg:virtual?video=smptebars&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=smptebars&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=smptebars&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 3
+			}
 		},
 		{
 			"id": "reception",
 			"name": "Reception",
 			"groupId": "entrances",
 			"main": "ffmpeg:virtual?video=rgbtestsrc&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=rgbtestsrc&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=rgbtestsrc&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 4
+			}
 		},
 		{
 			"id": "aisle-1",
 			"name": "Aisle 1",
 			"groupId": "warehouse",
 			"main": "ffmpeg:virtual?video=gradients&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=gradients&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=gradients&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 5
+			}
 		},
 		{
 			"id": "aisle-2",
 			"name": "Aisle 2",
 			"groupId": "warehouse",
 			"main": "ffmpeg:virtual?video=mandelbrot&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=mandelbrot&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=mandelbrot&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 6
+			}
 		},
 		{
 			"id": "aisle-3",
 			"name": "Aisle 3",
 			"groupId": "warehouse",
 			"main": "ffmpeg:virtual?video=life&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=life&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=life&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 7
+			}
 		},
 		{
 			"id": "packing",
 			"name": "Packing",
 			"groupId": "warehouse",
 			"main": "ffmpeg:virtual?video=cellauto&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=cellauto&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=cellauto&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 8
+			}
 		},
 		{
 			"id": "loading-dock",
 			"name": "Loading dock",
 			"groupId": "warehouse",
 			"main": "ffmpeg:virtual?video=smptehdbars&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=smptehdbars&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=smptehdbars&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 9
+			}
 		},
 		{
 			"id": "gate",
 			"name": "Gate",
 			"groupId": "yard",
 			"main": "ffmpeg:virtual?video=pal75bars&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=pal75bars&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=pal75bars&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 10
+			}
 		},
 		{
 			"id": "parking",
 			"name": "Parking",
 			"groupId": "yard",
 			"main": "ffmpeg:virtual?video=yuvtestsrc&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=yuvtestsrc&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=yuvtestsrc&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 11
+			}
 		},
 		{
 			"id": "fence-line",
 			"name": "Fence line",
 			"groupId": "yard",
 			"main": "ffmpeg:virtual?video=testsrc2&size=1080#video=h264",
-			"sub": "ffmpeg:virtual?video=testsrc2&size=640x360#video=h264"
+			"sub": "ffmpeg:virtual?video=testsrc2&size=640x360#video=h264",
+			"replay": {
+				"recorder": "demo",
+				"channel": 12
+			}
 		}
 	],
 	"groups": [
@@ -106,6 +154,16 @@
 			"name": "Front of house",
 			"layout": "6",
 			"slots": ["front-door", "lobby", "reception", "side-door", "gate", "parking"]
+		}
+	],
+	"recorders": [
+		{
+			"id": "demo",
+			"name": "Demo recorder",
+			"host": "dvr",
+			"port": 8780,
+			"user": "admin",
+			"password": ""
 		}
 	]
 }

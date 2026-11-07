@@ -5,6 +5,9 @@ import {
 	type DiscoverRequest,
 	DiscoverResponse,
 	type NewCamera,
+	type NewRecorder,
+	ReplayDays,
+	ReplaySpans,
 	type StatePatch,
 } from "@/shared/schema";
 
@@ -46,6 +49,22 @@ export const api = {
 			schema: AppState,
 			init: { method: "DELETE" },
 		}),
+	addRecorder: (body: NewRecorder) =>
+		call({ path: "/api/recorders", schema: AppState, init: send("POST", body) }),
+	removeRecorder: (id: string) =>
+		call({
+			path: `/api/recorders/${encodeURIComponent(id)}`,
+			schema: AppState,
+			init: { method: "DELETE" },
+		}),
+	replayDays: async (camera: string): Promise<string[]> => {
+		const path = `/api/replay/${encodeURIComponent(camera)}/days`;
+		return (await call({ path, schema: ReplayDays })).days;
+	},
+	replaySpans: async (camera: string, day: string) => {
+		const path = `/api/replay/${encodeURIComponent(camera)}/day/${day}`;
+		return (await call({ path, schema: ReplaySpans })).spans;
+	},
 	discover: async (body: DiscoverRequest): Promise<DiscoveredCamera[]> => {
 		const { cameras } = await call({
 			path: "/api/discover",
