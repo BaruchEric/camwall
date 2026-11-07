@@ -545,6 +545,48 @@ check("the phone layout has no sideways scroll", !overflow);
 	await replay.waitForSelector(".tile");
 	check("Esc goes back to the wall", (await replay.locator(".replay").count()) === 0);
 
+	// The top bar switch, the camera list and links all lead into playback.
+	await replay.locator('.mode[data-mode="replay"]').click();
+	await replay.waitForSelector(".replay");
+	check("the Playback switch opens playback", new URL(replay.url()).searchParams.has("replay"));
+	check(
+		"wall tools hide in playback",
+		(await replay.locator('.topbar [aria-label="Layout"]').count()) === 0,
+	);
+	await replay.locator(".rail-camera", { hasText: "Gate" }).click();
+	await replay.waitForTimeout(400);
+	check(
+		"the camera list picks what plays",
+		(await replay.locator(".title").textContent()) === "Gate",
+	);
+	const picture = await replay.locator(".replay-picture").boundingBox();
+	await replay.mouse.click(picture.x + 200, picture.y + 200, { button: "right" });
+	await replay.waitForSelector(".ctx-panel");
+	const menuText = await replay.locator(".ctx").textContent();
+	check(
+		"right click on footage gives the playback menu",
+		menuText.includes("Leave playback") && !menuText.includes("Layout"),
+	);
+	await replay.keyboard.press("Escape");
+	await replay.locator('.mode[data-mode="live"]').click();
+	await replay.waitForSelector(".tile");
+
+	// The stand-in recorder holds the last few days, so yesterday is always there.
+	const yesterday = new Date(Date.now() - 86_400_000);
+	const pad = (n) => String(n).padStart(2, "0");
+	const stampDay = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`;
+	await replay.goto(`${base}/?view=all&replay=gate&at=${stampDay}T10:05:00`);
+	await replay.waitForSelector(".replay");
+	await replay.waitForTimeout(800);
+	const linkedStamp = await replay.locator(".replay-stamp").textContent();
+	check(
+		"a link opens playback at its moment",
+		linkedStamp.includes("Gate") && linkedStamp.includes("10:05"),
+		linkedStamp,
+	);
+	await replay.locator('.mode[data-mode="live"]').click();
+	await replay.waitForSelector(".tile");
+
 	await replay.locator('[aria-label="Settings"]').click();
 	await replay.locator(".dialog button", { hasText: "Recorders" }).click();
 	const linked = await replay.locator(".recorder-row").textContent();

@@ -13,8 +13,10 @@ import {
 } from "lucide-react";
 import {
 	type PointerEvent as ReactPointerEvent,
+	type Ref,
 	useCallback,
 	useEffect,
+	useImperativeHandle,
 	useMemo,
 	useRef,
 	useState,
@@ -24,11 +26,13 @@ import {
 	type PublicCamera,
 	type Quality,
 	REPLAY_RATES,
+	type ReplayRate,
 	type Span,
 } from "@/shared/schema";
 import { Menu } from "@/web/components/ui";
 import { api } from "@/web/lib/api";
 import { useMedia } from "@/web/lib/hooks";
+import type { ReplayStatus } from "@/web/lib/menus";
 import { ReplayPlayer, type ReplayState } from "@/web/lib/replay";
 import { saveSnapshot } from "@/web/lib/snapshot";
 import {
@@ -37,6 +41,7 @@ import {
 	clockText,
 	dayText,
 	fractionOf,
+	type Moment,
 	monthCells,
 	msAt,
 	openingMs,
@@ -47,8 +52,18 @@ import {
 	ZOOM_HOURS,
 	type ZoomHours,
 } from "@/web/lib/timeline";
+import { menuId } from "@/web/lib/wall";
 
-type Rate = (typeof REPLAY_RATES)[number];
+/** What the rest of the page may do to playback: its menus, mostly. */
+export type ReplayControls = {
+	status: () => ReplayStatus;
+	toggle: () => void;
+	skip: (ms: number) => void;
+	setRate: (rate: ReplayRate) => void;
+	setQuality: (quality: Quality) => void;
+	step: (delta: 1 | -1) => void;
+	video: () => HTMLVideoElement | null;
+};
 
 const STATE_NOTE: Record<ReplayState, string | null> = {
 	opening: "Opening the recording",
@@ -201,24 +216,29 @@ function Timeline({
 export function ReplayView({
 	camera,
 	cameras,
+	at,
+	controls,
 	onCamera,
 	onClose,
 }: {
 	camera: CameraId;
 	cameras: readonly PublicCamera[];
+	/** Where to open, from a link. Null opens just before the newest footage. */
+	at: Moment | null;
+	controls?: Ref<ReplayControls>;
 	onCamera: (camera: CameraId) => void;
 	onClose: () => void;
 }) {
 	const video = useRef<HTMLVideoElement>(null);
 	const player = useRef<ReplayPlayer | null>(null);
 	const [days, setDays] = useState<readonly string[]>([]);
-	const [day, setDay] = useState<string | null>(null);
+	const [day, setDay] = useState<string | null>(at?.day ?? null);
 	const [spans, setSpans] = useState<readonly Span[] | null>(null);
 	/** Where the next connection starts. Null waits for the timeline to choose. */
-	const [start, setStart] = useState<number | null>(null);
-	const [position, setPosition] = useState(0);
+	const [start, setStart] = useState<number | null>(at?.ms ?? null);
+	const [position, setPosition] = useState(at?.ms ?? 0);
 	const [quality, setQuality] = useState<Quality>("main");
-	const [rate, setRate] = useState<Rate>(1);
+	const [rate, setRate] = useState<ReplayRate>(1);
 	const [state, setState] = useState<ReplayState>("opening");
 	const [detail, setDetail] = useState<string | null>(null);
 	const [problem, setProblem] = useState<string | null>(null);
@@ -229,6 +249,17 @@ export function ReplayView({
 	const here = cameras.findIndex((c) => c.id === camera);
 	const name = cameras[here]?.name ?? "Camera";
 
+	// However the camera changes, from the bar, the camera list or a menu, the moment stays.
+	// That is how you follow someone from camera to camera.
+	const [shown, setShown] = useState(camera);
+	if (shown !== camera) {
+		setShown(camera);
+		setStart((current) => (current === null ? null : position));
+	}
+
+	const dayNow = useRef(day);
+	dayNow.current = day;
+
 	useEffect(() => {
 		let live = true;
 		api.replayDays(camera).then(
@@ -236,9 +267,11 @@ export function ReplayView({
 				if (!live) return;
 				setProblem(found.length === 0 ? "This recorder holds no footage." : null);
 				setDays(found);
-				setDay((current) =>
-					current !== null && found.includes(current) ? current : (found.at(-1) ?? null),
-				);
+				const current = dayNow.current;
+				if (current !== null && found.includes(current)) return;
+				// A time of day means nothing on another day, so the newest footage decides.
+				setStart(null);
+				setDay(found.at(-1) ?? null);
 			},
 			(error: unknown) => {
 				if (live)
@@ -316,35 +349,59 @@ export function ReplayView({
 		[position],
 	);
 
-	/** Keeps the moment on screen, which is how you follow someone from camera to camera. */
 	const stepCamera = useCallback(
-		(delta: number) => {
+		(delta: 1 | -1) => {
 			const next = cameras[(here + delta + cameras.length) % cameras.length];
-			if (!next || next.id === camera) return;
-			holdPosition();
-			onCamera(next.id);
+			if (next && next.id !== camera) onCamera(next.id);
 		},
-		[cameras, here, camera, holdPosition, onCamera],
+		[cameras, here, camera, onCamera],
 	);
 
-	const changeQuality = () => {
-		holdPosition();
-		setQuality((value) => (value === "main" ? "sub" : "main"));
-	};
+	const changeQuality = useCallback(
+		(next: Quality) => {
+			if (next === quality) return;
+			holdPosition();
+			setQuality(next);
+		},
+		[quality, holdPosition],
+	);
 
 	const snapshot = useCallback(() => {
 		if (video.current) saveSnapshot({ video: video.current, name });
 	}, [name]);
 
+	const paused = state === "paused" || state === "ended";
+
+	useImperativeHandle(
+		controls,
+		() => ({
+			status: () => ({
+				camera,
+				day,
+				position,
+				playing: !paused,
+				rate,
+				quality,
+				hasFrame: (video.current?.videoWidth ?? 0) > 0,
+			}),
+			toggle,
+			skip: (ms) => seek(position + ms),
+			setRate,
+			setQuality: changeQuality,
+			step: stepCamera,
+			video: () => video.current,
+		}),
+		[camera, day, position, paused, rate, quality, toggle, seek, changeQuality, stepCamera],
+	);
+
 	useEffect(() => {
 		const onKey = (event: KeyboardEvent) => {
 			const target = event.target;
-			if (
+			const typing =
 				target instanceof HTMLElement &&
-				["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName)
-			) {
-				return;
-			}
+				(target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
+			// A menu or a dialog on top owns the keys, Space included.
+			if (typing || document.querySelector("dialog[open], .ctx")) return;
 			if (event.metaKey || event.ctrlKey || event.altKey) return;
 			switch (event.key) {
 				case " ":
@@ -378,10 +435,9 @@ export function ReplayView({
 	}, [toggle, seek, position, stepCamera, snapshot, onClose]);
 
 	const note = problem ?? (state === "failed" ? (detail ?? STATE_NOTE.failed) : STATE_NOTE[state]);
-	const paused = state === "paused" || state === "ended";
 
 	return (
-		<section className="replay" aria-label={`Recordings from ${name}`}>
+		<section className="replay" aria-label={`Recordings from ${name}`} data-menu={menuId.replay}>
 			<div className="replay-picture">
 				<video ref={video} muted playsInline aria-label={name} onClick={toggle} />
 				{note && (
@@ -520,10 +576,7 @@ export function ReplayView({
 						value={camera}
 						onChange={(event) => {
 							const next = cameras.find((c) => c.id === event.target.value);
-							if (next) {
-								holdPosition();
-								onCamera(next.id);
-							}
+							if (next) onCamera(next.id);
 						}}
 					>
 						{cameras.map((item) => (
@@ -547,7 +600,7 @@ export function ReplayView({
 					className="chip"
 					title="Picture quality"
 					aria-label={`Picture quality: ${quality === "main" ? "HD" : "SD"}. Change it.`}
-					onClick={changeQuality}
+					onClick={() => changeQuality(quality === "main" ? "sub" : "main")}
 				>
 					{quality === "main" ? "HD" : "SD"}
 				</button>
@@ -563,8 +616,8 @@ export function ReplayView({
 				<button
 					type="button"
 					className="tool"
-					aria-label="Back to live"
-					title="Back to live (Esc)"
+					aria-label="Leave playback"
+					title="Leave playback (Esc)"
 					onClick={onClose}
 				>
 					<X size={17} />

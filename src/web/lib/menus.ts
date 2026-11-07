@@ -25,18 +25,23 @@ import {
 	MoveDown,
 	MoveUp,
 	PanelLeft,
+	Pause,
 	Pencil,
 	PictureInPicture2,
 	Play,
 	Plus,
+	Radio,
 	RectangleHorizontal,
 	RefreshCw,
 	Replace,
 	RotateCcw,
+	RotateCw,
 	Save,
 	Scan,
 	Settings,
 	Shrink,
+	SkipBack,
+	SkipForward,
 	Square,
 	Trash2,
 	Undo2,
@@ -50,6 +55,9 @@ import {
 	type Group,
 	GroupId,
 	type PublicCamera,
+	type Quality,
+	REPLAY_RATES,
+	type ReplayRate,
 	uniqueSlug,
 	type View,
 	ViewId,
@@ -57,6 +65,7 @@ import {
 import type { Fit } from "@/web/components/Wall";
 import type { PlayerState } from "@/web/lib/player";
 import { STATE_TEXT } from "@/web/lib/status";
+import { clockText, dayText, SKIP_MS } from "@/web/lib/timeline";
 import {
 	allRefs,
 	FULL_TILE,
@@ -201,6 +210,34 @@ function replayAction(camera: PublicCamera, run: MenuCommands): MenuNode {
 	};
 }
 
+/** Where playback stands. A menu reads it on every redraw, so its clock keeps moving. */
+export type ReplayStatus = {
+	camera: CameraId;
+	day: string | null;
+	/** Milliseconds after midnight on the recorder's clock. */
+	position: number;
+	playing: boolean;
+	rate: ReplayRate;
+	quality: Quality;
+	hasFrame: boolean;
+};
+
+export type ReplayCommands = {
+	toggle: () => void;
+	skip: (ms: number) => void;
+	rate: (rate: ReplayRate) => void;
+	quality: (quality: Quality) => void;
+	step: (delta: 1 | -1) => void;
+	snapshot: () => void;
+	copySnapshot: () => void;
+	copyLink: () => void;
+	/** The same camera, live, in full view. */
+	live: () => void;
+	leave: () => void;
+};
+
+export type ReplayMenu = { read: () => ReplayStatus; run: ReplayCommands };
+
 export type MenuContext = {
 	state: AppState;
 	wall: WallState;
@@ -221,6 +258,8 @@ export type MenuContext = {
 	hasFrame: (index: number) => boolean;
 	rate: (index: number) => string | null;
 	run: MenuCommands;
+	/** Set while playback fills the screen. */
+	replay: ReplayMenu | null;
 };
 
 const RULE: MenuNode = { kind: "rule" };
@@ -950,11 +989,9 @@ function saveItems(ctx: MenuContext): MenuNode[] {
 	return items;
 }
 
-function wallMenu(ctx: MenuContext): MenuSpec {
-	const { state, wall, run, pages, fit, tour, tourSeconds, railVisible, fullscreen } = ctx;
-	const shown = wall.slots.filter((slot) => slot !== null).length;
-	const name = resolveRef(wall.ref, state)?.name ?? "All cameras";
-	const view: MenuNode[] = [
+/** Full screen, the camera list and the shortcuts, which every screen offers. */
+function screenItems({ run, railVisible, fullscreen }: MenuContext): MenuNode[] {
+	return [
 		{
 			kind: "action",
 			label: fullscreen ? "Leave full screen" : "Full screen",
@@ -977,6 +1014,13 @@ function wallMenu(ctx: MenuContext): MenuSpec {
 			run: run.help,
 		},
 	];
+}
+
+function wallMenu(ctx: MenuContext): MenuSpec {
+	const { state, wall, run, pages, fit, tour, tourSeconds } = ctx;
+	const shown = wall.slots.filter((slot) => slot !== null).length;
+	const name = resolveRef(wall.ref, state)?.name ?? "All cameras";
+	const view = screenItems(ctx);
 
 	if (state.cameras.length === 0) {
 		return {
@@ -1059,6 +1103,135 @@ function wallMenu(ctx: MenuContext): MenuSpec {
 		head: {
 			name,
 			info: pages > 1 ? `Page ${wall.page + 1} of ${pages}` : count(shown, "camera"),
+		},
+		nodes: tidyRules(nodes),
+	};
+}
+
+function replayMenu(ctx: MenuContext, replay: ReplayMenu): MenuSpec {
+	const { state, run, can } = ctx;
+	const status = replay.read();
+	const commands = replay.run;
+	const recorded = state.cameras.filter((c) => c.hasReplay);
+	const name = cameraOf(ctx, status.camera)?.name ?? status.camera;
+
+	const nodes: MenuNode[] = [
+		{
+			kind: "action",
+			label: status.playing ? "Pause" : "Play",
+			icon: status.playing ? Pause : Play,
+			keys: "Space",
+			run: commands.toggle,
+		},
+		{
+			kind: "action",
+			label: "Back 10 seconds",
+			icon: RotateCcw,
+			keys: "Left",
+			run: () => commands.skip(-SKIP_MS),
+		},
+		{
+			kind: "action",
+			label: "Forward 10 seconds",
+			icon: RotateCw,
+			keys: "Right",
+			run: () => commands.skip(SKIP_MS),
+		},
+		{
+			kind: "segment",
+			label: "Speed",
+			value: String(status.rate),
+			options: REPLAY_RATES.map((rate) => ({ id: String(rate), label: `${rate}x` })),
+			pick: (id) => {
+				const rate = REPLAY_RATES.find((r) => String(r) === id);
+				if (rate) commands.rate(rate);
+			},
+		},
+		{
+			kind: "segment",
+			label: "Picture",
+			value: status.quality,
+			options: [
+				{ id: "main", label: "HD" },
+				{ id: "sub", label: "SD" },
+			],
+			pick: (id) => {
+				if (id === "main" || id === "sub") commands.quality(id);
+			},
+		},
+		RULE,
+		{
+			kind: "action",
+			label: "Save snapshot",
+			icon: CameraIcon,
+			keys: "S",
+			disabled: !status.hasFrame,
+			note: status.hasFrame ? undefined : "No picture yet",
+			run: commands.snapshot,
+		},
+	];
+	if (can.copyImage) {
+		nodes.push({
+			kind: "action",
+			label: "Copy snapshot",
+			icon: ClipboardCopy,
+			disabled: !status.hasFrame,
+			run: commands.copySnapshot,
+		});
+	}
+	nodes.push({
+		kind: "action",
+		label: "Copy link to this moment",
+		icon: Link,
+		disabled: status.day === null,
+		run: commands.copyLink,
+	});
+	if (recorded.length > 1) {
+		nodes.push(
+			RULE,
+			{
+				kind: "action",
+				label: "Next camera, same moment",
+				icon: SkipForward,
+				keys: "]",
+				run: () => commands.step(1),
+			},
+			{
+				kind: "action",
+				label: "Previous camera, same moment",
+				icon: SkipBack,
+				keys: "[",
+				run: () => commands.step(-1),
+			},
+			{
+				kind: "sub",
+				label: "Switch camera",
+				icon: Replace,
+				note: name,
+				filter: recorded.length >= FILTER_FROM ? "Find a camera" : undefined,
+				items: recorded.map((camera) => ({
+					kind: "action",
+					label: camera.name,
+					checked: camera.id === status.camera,
+					run: () => run.replay(camera.id),
+				})),
+			},
+		);
+	}
+	nodes.push(
+		RULE,
+		{ kind: "action", label: "Watch live", icon: Radio, run: commands.live },
+		{ kind: "action", label: "Leave playback", icon: X, keys: "Esc", run: commands.leave },
+		RULE,
+		...screenItems(ctx),
+	);
+	return {
+		head: {
+			name,
+			info:
+				status.day === null
+					? "Opening the recording"
+					: `${dayText(status.day)} ${clockText(status.position)}`,
 		},
 		nodes: tidyRules(nodes),
 	};
@@ -1164,6 +1337,8 @@ export function buildMenu(target: MenuTarget, ctx: MenuContext): MenuSpec {
 			return railMenu(ctx);
 		case "health":
 			return healthMenu(ctx);
+		case "replay":
+			return ctx.replay ? replayMenu(ctx, ctx.replay) : wallMenu(ctx);
 		default: {
 			const _exhaustive: never = target;
 			return _exhaustive;

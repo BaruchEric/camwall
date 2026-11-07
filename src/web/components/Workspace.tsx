@@ -14,15 +14,16 @@ import { type AppState, type CameraId, uniqueSlug, ViewId } from "@/shared/schem
 import { type MenuTrigger, triggerAt, useMenuTriggers } from "@/web/components/ContextMenu";
 import { WallMenu, type WallMenuContext } from "@/web/components/ContextMenuHost";
 import { Rail } from "@/web/components/Rail";
-import { ReplayView } from "@/web/components/Replay";
+import { type ReplayControls, ReplayView } from "@/web/components/Replay";
 import { SettingsDialog, type SettingsTab } from "@/web/components/Settings";
-import { TopBar } from "@/web/components/TopBar";
+import { type Mode, TopBar } from "@/web/components/TopBar";
 import { Dialog } from "@/web/components/ui";
 import { type Fit, Wall } from "@/web/components/Wall";
 import { api } from "@/web/lib/api";
 import { readPref, useMedia, writePref } from "@/web/lib/hooks";
-import type { MenuSpec, TileCell } from "@/web/lib/menus";
+import type { MenuSpec, ReplayMenu, TileCell } from "@/web/lib/menus";
 import { canCopyImage, copySnapshot, copyText, saveSnapshot } from "@/web/lib/snapshot";
+import { type Moment, momentText, parseMoment } from "@/web/lib/timeline";
 import {
 	allRefs,
 	cellsPerPage,
@@ -41,22 +42,42 @@ import {
 	wallReducer,
 } from "@/web/lib/wall";
 
-const SHORTCUTS: [string, string][] = [
-	["Arrow keys", "Move between tiles"],
-	["Enter", "Open the selected tile in full view"],
-	["Esc", "Back to the wall"],
-	["S", "Save a snapshot of the selected tile"],
-	["P", "Play back recordings from the selected tile"],
-	["Delete", "Clear the selected tile"],
-	["[ and ]", "Previous and next page"],
-	["1 to 9", "Jump to a view"],
-	["T", "Start or stop the tour"],
-	["F", "Full screen"],
-	["B", "Show or hide the camera list"],
-	["?", "This list"],
-	["Right click", "Actions for whatever is under the pointer"],
-	["Shift+F10", "The same actions for the selected tile"],
-	["Shift + right click", "The browser's own menu"],
+const SHORTCUTS: { title: string; keys: [string, string][] }[] = [
+	{
+		title: "Live",
+		keys: [
+			["Arrow keys", "Move between tiles"],
+			["Enter", "Open the selected tile in full view"],
+			["Esc", "Back to the wall"],
+			["S", "Save a snapshot of the selected tile"],
+			["P", "Play back recordings, starting with the selected tile"],
+			["Delete", "Clear the selected tile"],
+			["[ and ]", "Previous and next page"],
+			["T", "Start or stop the tour"],
+		],
+	},
+	{
+		title: "Playback",
+		keys: [
+			["Space", "Play or pause"],
+			["Left and Right", "Back or forward 10 seconds"],
+			["[ and ]", "Previous or next camera, same moment"],
+			["S", "Save a snapshot"],
+			["P or Esc", "Back to live"],
+		],
+	},
+	{
+		title: "Anywhere",
+		keys: [
+			["1 to 9", "Jump to a view"],
+			["F", "Full screen"],
+			["B", "Show or hide the camera list"],
+			["?", "This list"],
+			["Right click", "Actions for whatever is under the pointer"],
+			["Shift+F10", "The same actions for the selected tile"],
+			["Shift + right click", "The browser's own menu"],
+		],
+	},
 ];
 
 /** Where the wall's tiles sit right now, read from the page so it matches what is on screen. */
@@ -92,6 +113,13 @@ function refFromUrl(state: AppState): ViewRef {
 	return allRefs(state).find((ref) => refKey(ref) === key) ?? { kind: "all" };
 }
 
+/** A link can open playback: ?replay=<camera>, and &at=2026-11-07T14:03:22 for one moment. */
+function replayFromUrl(state: AppState): { camera: CameraId | null; at: Moment | null } {
+	const params = new URLSearchParams(location.search);
+	const camera = state.cameras.find((c) => c.id === params.get("replay") && c.hasReplay);
+	return { camera: camera?.id ?? null, at: camera ? parseMoment(params.get("at")) : null };
+}
+
 function storedSeconds(): TourSeconds {
 	const stored = Number(readPref("tourSeconds"));
 	return TOUR_SECONDS.find((seconds) => seconds === stored) ?? 15;
@@ -124,30 +152,68 @@ export function Workspace({
 	const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
 	const [restarts, setRestarts] = useState<ReadonlyMap<CameraId, number>>(new Map());
 	const [isFullscreen, setIsFullscreen] = useState(false);
-	const [replay, setReplay] = useState<CameraId | null>(null);
+	const [linked] = useState(() => replayFromUrl(state));
+	const [replay, setReplay] = useState<CameraId | null>(linked.camera);
+	/** Where playback opens. Only a link sets it, and leaving playback forgets it. */
+	const [replayAt, setReplayAt] = useState<Moment | null>(linked.at);
+	const replayControls = useRef<ReplayControls>(null);
 	const box = useRef<HTMLDivElement>(null);
 	const compact = useMedia("(max-width: 720px)");
 
 	useEffect(() => dispatch({ type: "sync", state }), [state]);
 
+	const cameras = useMemo(() => new Map(state.cameras.map((c) => [c.id, c])), [state.cameras]);
+	const resolved = resolveRef(wall.ref, state);
+	const pages = compact ? 1 : pageCount(wall);
+	// A camera whose recorder was unlinked in Settings has nothing left to play.
+	const replayCamera = replay !== null && cameras.get(replay)?.hasReplay ? replay : null;
+	const canReplay = state.cameras.some((c) => c.hasReplay);
+
 	const key = refKey(wall.ref);
 	useEffect(() => {
 		const url = new URL(location.href);
 		url.searchParams.set("view", key);
+		if (replayCamera) url.searchParams.set("replay", replayCamera);
+		else url.searchParams.delete("replay");
+		// A moment is for opening a link. Kept, it would send a reload back to it.
+		url.searchParams.delete("at");
 		history.replaceState(null, "", url);
-	}, [key]);
+	}, [key, replayCamera]);
 
-	const cameras = useMemo(() => new Map(state.cameras.map((c) => [c.id, c])), [state.cameras]);
-	const resolved = resolveRef(wall.ref, state);
-	const pages = compact ? 1 : pageCount(wall);
+	const leaveReplay = useCallback(() => {
+		setReplay(null);
+		setReplayAt(null);
+	}, []);
+
+	/** Playback starts with the camera you are looking at, if it has footage. */
+	const replayTarget = (): CameraId | null => {
+		const recorded = (id: CameraId | null | undefined) =>
+			id && cameras.get(id)?.hasReplay ? id : null;
+		return (
+			recorded(wall.focused) ??
+			recorded(wall.selected === null ? null : wall.slots[wall.selected]) ??
+			wall.slots.find((id) => recorded(id) !== null) ??
+			state.cameras.find((c) => c.hasReplay)?.id ??
+			null
+		);
+	};
+
+	const changeMode = (mode: Mode) => {
+		if (mode === "live") {
+			leaveReplay();
+			return;
+		}
+		const camera = replayTarget();
+		if (camera) setReplay(camera);
+	};
 
 	const open = useCallback(
 		(ref: ViewRef) => {
-			setReplay(null);
+			leaveReplay();
 			dispatch({ type: "open", ref, state });
 			setDrawerOpen(false);
 		},
-		[state],
+		[state, leaveReplay],
 	);
 
 	const stepTour = useCallback(() => {
@@ -162,7 +228,7 @@ export function Workspace({
 	}, [wall.page, pages, state, key]);
 
 	// The tour waits while a menu is open, so the wall does not change under it.
-	const touring = tour && menu === null && replay === null;
+	const touring = tour && menu === null && replayCamera === null;
 	useEffect(() => {
 		if (!touring) return;
 		const timer = setInterval(stepTour, tourSeconds * 1000);
@@ -225,6 +291,7 @@ export function Workspace({
 		open: openMenu,
 		busy: () => dragging !== null,
 		keyboardAnchor: () => {
+			if (replayCamera) return box.current?.querySelector(".replay") ?? box.current;
 			const tile = wall.focused ? FULL_TILE : wall.selected;
 			return (tile !== null && box.current?.querySelector(`[data-tile="${tile}"]`)) || box.current;
 		},
@@ -232,7 +299,7 @@ export function Workspace({
 
 	// A menu speaks about one wall, so it goes when that wall does.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: these are the triggers
-	useEffect(() => setMenu(null), [key, wall.page, wall.focused]);
+	useEffect(() => setMenu(null), [key, wall.page, wall.focused, replayCamera]);
 
 	useEffect(() => {
 		const anchor = menu?.anchor;
@@ -246,8 +313,39 @@ export function Workspace({
 			const typing =
 				target instanceof HTMLElement &&
 				(target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(target.tagName));
-			if (typing || menu || replay || document.querySelector("dialog[open]")) return;
+			if (typing || menu || document.querySelector("dialog[open]")) return;
 			if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+			// Playback has its own keys. These are the ones that belong to the whole page.
+			const jump = Number(event.key);
+			const ref = Number.isInteger(jump) && jump > 0 ? allRefs(state)[jump - 1] : null;
+			switch (event.key) {
+				case "f":
+					fullscreen();
+					event.preventDefault();
+					return;
+				case "b":
+					toggleRail();
+					event.preventDefault();
+					return;
+				case "?":
+					setHelp(true);
+					event.preventDefault();
+					return;
+				default:
+					if (ref) {
+						open(ref);
+						event.preventDefault();
+						return;
+					}
+			}
+			if (replayCamera) {
+				if (event.key === "p") {
+					leaveReplay();
+					event.preventDefault();
+				}
+				return;
+			}
 
 			const first = wall.page * cellsPerPage(wall);
 			const last = first + cellsPerPage(wall) - 1;
@@ -299,35 +397,22 @@ export function Workspace({
 					else if (wall.selected !== null) snapshot(wall.selected);
 					break;
 				case "p": {
-					const camera =
-						wall.focused ?? (wall.selected === null ? null : wall.slots[wall.selected]);
-					if (camera && cameras.get(camera)?.hasReplay) setReplay(camera);
+					const camera = replayTarget();
+					if (!camera) return;
+					setReplay(camera);
 					break;
 				}
 				case "t":
 					setTour((value) => !value);
 					break;
-				case "f":
-					fullscreen();
-					break;
-				case "b":
-					toggleRail();
-					break;
-				case "?":
-					setHelp(true);
-					break;
-				default: {
-					const number = Number(event.key);
-					const ref = Number.isInteger(number) && number > 0 ? allRefs(state)[number - 1] : null;
-					if (!ref) return;
-					open(ref);
-				}
+				default:
+					return;
 			}
 			event.preventDefault();
 		};
 		window.addEventListener("keydown", onKey);
 		return () => window.removeEventListener("keydown", onKey);
-	}, [wall, state, menu, replay, cameras, open, snapshot, fullscreen, toggleRail]);
+	});
 
 	const sensors = useSensors(
 		useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
@@ -382,6 +467,15 @@ export function Workspace({
 	};
 
 	const pickCamera = (camera: CameraId) => {
+		if (replayCamera) {
+			if (!cameras.get(camera)?.hasReplay) {
+				setToast(`${cameras.get(camera)?.name ?? "That camera"} has no recorder linked`);
+				return;
+			}
+			setDrawerOpen(false);
+			setReplay(camera);
+			return;
+		}
 		setDrawerOpen(false);
 		if (wall.selected !== null && !wall.focused) {
 			dispatch({ type: "assign", index: wall.selected, camera });
@@ -438,6 +532,55 @@ export function Workspace({
 		);
 	};
 
+	const copyMoment = () => {
+		const status = replayControls.current?.status();
+		if (!status?.day) return;
+		const url = new URL(location.href);
+		url.searchParams.set("replay", status.camera);
+		url.searchParams.set("at", momentText({ day: status.day, ms: status.position }));
+		report(copyText(url.href), "Link copied", "Copying the link failed");
+	};
+
+	const replayMenu = (camera: CameraId): ReplayMenu => {
+		const controls = () => replayControls.current;
+		const video = () => controls()?.video() ?? null;
+		return {
+			read: () =>
+				controls()?.status() ?? {
+					camera,
+					day: null,
+					position: 0,
+					playing: false,
+					rate: 1,
+					quality: "main",
+					hasFrame: false,
+				},
+			run: {
+				toggle: () => controls()?.toggle(),
+				skip: (ms) => controls()?.skip(ms),
+				rate: (rate) => controls()?.setRate(rate),
+				quality: (quality) => controls()?.setQuality(quality),
+				step: (delta) => controls()?.step(delta),
+				snapshot: () => {
+					const element = video();
+					if (element) saveSnapshot({ video: element, name: cameras.get(camera)?.name ?? camera });
+				},
+				copySnapshot: () => {
+					const element = video();
+					if (element) {
+						report(copySnapshot(element), "Snapshot copied", "Copying the snapshot failed");
+					}
+				},
+				copyLink: copyMoment,
+				live: () => {
+					leaveReplay();
+					dispatch({ type: "focus", camera });
+				},
+				leave: leaveReplay,
+			},
+		};
+	};
+
 	const menuContext: WallMenuContext = {
 		state,
 		wall,
@@ -454,10 +597,12 @@ export function Workspace({
 			popOut: document.pictureInPictureEnabled === true,
 		},
 		hasFrame: (index) => (tileVideo(index)?.videoWidth ?? 0) > 0,
+		replay: replayCamera ? replayMenu(replayCamera) : null,
 		run: {
-			// These change the wall, and Settings would hide the result.
+			// These change the wall, and Settings or playback would hide the result.
 			dispatch: (action) => {
 				setSettings(null);
+				leaveReplay();
 				dispatch(action);
 			},
 			commit,
@@ -512,9 +657,16 @@ export function Workspace({
 
 	const shell = ["app"];
 	if (!railOpen) shell.push("app-no-rail");
-	const title = wall.focused
-		? (cameras.get(wall.focused)?.name ?? "Camera")
-		: (resolved?.name ?? "All cameras");
+	const title = replayCamera
+		? (cameras.get(replayCamera)?.name ?? "Camera")
+		: wall.focused
+			? (cameras.get(wall.focused)?.name ?? "Camera")
+			: (resolved?.name ?? "All cameras");
+	const titleMenu = replayCamera
+		? menuId.replay
+		: wall.focused
+			? menuId.camera(wall.focused)
+			: menuId.view(wall.ref);
 
 	return (
 		<DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd}>
@@ -531,6 +683,7 @@ export function Workspace({
 					state={state}
 					current={key}
 					open={compact ? drawerOpen : railOpen}
+					replay={replayCamera}
 					dragging={dragging !== null}
 					collapsed={collapsed}
 					onToggle={toggleGroup}
@@ -540,8 +693,11 @@ export function Workspace({
 					onSettings={() => setSettings("Cameras")}
 				/>
 				<TopBar
+					mode={replayCamera ? "replay" : "live"}
+					canReplay={canReplay}
+					onMode={changeMode}
 					title={title}
-					titleMenu={wall.focused ? menuId.camera(wall.focused) : menuId.view(wall.ref)}
+					titleMenu={titleMenu}
 					edited={wall.edited && !wall.focused}
 					savedView={resolved?.saved != null}
 					layout={wall.layout}
@@ -567,12 +723,14 @@ export function Workspace({
 					ref={box}
 					data-menu={menuId.wall}
 				>
-					{replay !== null && cameras.has(replay) ? (
+					{replayCamera ? (
 						<ReplayView
-							camera={replay}
+							camera={replayCamera}
 							cameras={state.cameras.filter((camera) => camera.hasReplay)}
+							at={replayAt}
+							controls={replayControls}
 							onCamera={setReplay}
-							onClose={() => setReplay(null)}
+							onClose={leaveReplay}
 						/>
 					) : state.cameras.length === 0 ? (
 						<div className="empty">
@@ -638,14 +796,19 @@ export function Workspace({
 			)}
 			{help && (
 				<Dialog title="Keyboard shortcuts" onClose={() => setHelp(false)}>
-					<dl className="keys">
-						{SHORTCUTS.map(([keys, action]) => (
-							<div key={keys}>
-								<dt>{keys}</dt>
-								<dd>{action}</dd>
-							</div>
-						))}
-					</dl>
+					{SHORTCUTS.map((section) => (
+						<section key={section.title} className="keys-section">
+							<h3 className="keys-title">{section.title}</h3>
+							<dl className="keys">
+								{section.keys.map(([keys, action]) => (
+									<div key={keys}>
+										<dt>{keys}</dt>
+										<dd>{action}</dd>
+									</div>
+								))}
+							</dl>
+						</section>
+					))}
 				</Dialog>
 			)}
 			{naming && (

@@ -164,6 +164,7 @@ export const Day = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 export const DAY_MS = 86_400_000;
 const DayMs = z.number().int().min(0).max(DAY_MS);
 export const REPLAY_RATES = [1, 2, 4, 8] as const;
+export type ReplayRate = (typeof REPLAY_RATES)[number];
 
 export const ReplayDays = z.object({ days: z.array(Day) });
 

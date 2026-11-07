@@ -8,6 +8,8 @@ import {
 	type MenuNode,
 	type MenuSub,
 	type MenuTiles,
+	type ReplayMenu,
+	type ReplayStatus,
 	type TileCell,
 } from "@/web/lib/menus";
 import type { PlayerState } from "@/web/lib/player";
@@ -111,6 +113,7 @@ function harness(patch: Partial<MenuContext> = {}): Harness {
 			hasFrame: () => true,
 			rate: () => "HD 2.1 Mb/s",
 			run,
+			replay: null,
 			...patch,
 		},
 	};
@@ -162,6 +165,7 @@ describe("menu targets", () => {
 			ref: { kind: "all" },
 		});
 		expect(parseMenuTarget(menuId.wall)).toEqual({ kind: "wall" });
+		expect(parseMenuTarget(menuId.replay)).toEqual({ kind: "replay" });
 	});
 
 	test("junk names nothing", () => {
@@ -544,5 +548,103 @@ describe("found channels", () => {
 		expect(menu.head?.info).toBe("4 of 4 ticked");
 		expect(find(menu.nodes, "Tick all")).toMatchObject({ disabled: true });
 		expect(find(menu.nodes, "Tick none")).toMatchObject({ disabled: false });
+	});
+});
+
+describe("playback menu", () => {
+	const recorded = AppState.parse({
+		...state,
+		cameras: state.cameras.map((c) => ({ ...c, hasReplay: c.id !== "e" })),
+	});
+
+	function playback(patch: Partial<ReplayStatus> = {}) {
+		const done: string[] = [];
+		const status: ReplayStatus = {
+			camera: id("b"),
+			day: "2026-11-07",
+			position: 51_000_000,
+			playing: true,
+			rate: 1,
+			quality: "main",
+			hasFrame: true,
+			...patch,
+		};
+		const replay: ReplayMenu = {
+			read: () => status,
+			run: {
+				toggle: () => done.push("toggle"),
+				skip: (ms) => done.push(`skip ${ms}`),
+				rate: (rate) => done.push(`rate ${rate}`),
+				quality: (quality) => done.push(`quality ${quality}`),
+				step: (delta) => done.push(`step ${delta}`),
+				snapshot: () => done.push("snapshot"),
+				copySnapshot: () => done.push("copySnapshot"),
+				copyLink: () => done.push("copyLink"),
+				live: () => done.push("live"),
+				leave: () => done.push("leave"),
+			},
+		};
+		const made = harness({ state: recorded, replay });
+		return { ...made, done, menu: buildMenu({ kind: "replay" }, made.ctx) };
+	}
+
+	test("speaks about the footage on screen, not the wall", () => {
+		const { menu } = playback();
+		expect(menu.head?.name).toBe("B");
+		expect(menu.head?.info).toContain("14:10:00");
+		const names = labels(menu.nodes);
+		expect(names).toContain("Pause");
+		expect(names).not.toContain("Layout");
+		expect(names).not.toContain("Start tour");
+	});
+
+	test("drives the player", () => {
+		const { menu, done } = playback({ playing: false });
+		press(menu.nodes, "Play");
+		press(menu.nodes, "Back 10 seconds");
+		press(menu.nodes, "Next camera, same moment");
+		press(menu.nodes, "Copy link to this moment");
+		press(menu.nodes, "Watch live");
+		press(menu.nodes, "Leave playback");
+		const speed = find(menu.nodes, "Speed");
+		if (speed.kind !== "segment") throw new Error("Speed is not a segment");
+		expect(speed.value).toBe("1");
+		speed.pick("8");
+		expect(done).toEqual([
+			"toggle",
+			"skip -10000",
+			"step 1",
+			"copyLink",
+			"live",
+			"leave",
+			"rate 8",
+		]);
+	});
+
+	test("lists only cameras with footage to switch to", () => {
+		const { menu, calls } = playback();
+		const cameras = sub(menu.nodes, "Switch camera");
+		expect(labels(cameras.items)).toEqual(["A", "B", "C", "D"]);
+		expect(find(cameras.items, "B")).toMatchObject({ checked: true });
+		press(cameras.items, "D");
+		expect(calls).toEqual(["replay"]);
+	});
+
+	test("waits for a picture and a day before offering to save one", () => {
+		const { menu } = playback({ hasFrame: false, day: null });
+		expect(menu.head?.info).toBe("Opening the recording");
+		expect(find(menu.nodes, "Save snapshot")).toMatchObject({ disabled: true });
+		expect(find(menu.nodes, "Copy link to this moment")).toMatchObject({ disabled: true });
+	});
+
+	test("one recorded camera leaves nothing to step to", () => {
+		const lonely = AppState.parse({
+			...state,
+			cameras: state.cameras.map((c) => ({ ...c, hasReplay: c.id === "b" })),
+		});
+		const { ctx } = harness({ state: lonely, replay: playback().ctx.replay });
+		const names = labels(buildMenu({ kind: "replay" }, ctx).nodes);
+		expect(names).not.toContain("Switch camera");
+		expect(names).not.toContain("Next camera, same moment");
 	});
 });

@@ -260,7 +260,9 @@ export type MenuTarget =
 	| { kind: "view"; ref: ViewRef }
 	| { kind: "wall" }
 	| { kind: "rail" }
-	| { kind: "health" };
+	| { kind: "health" }
+	/** The footage on screen in playback. */
+	| { kind: "replay" };
 
 export const menuId = {
 	tile: (index: number) => `tile:${index}`,
@@ -270,10 +272,11 @@ export const menuId = {
 	wall: "wall",
 	rail: "rail",
 	health: "health",
+	replay: "replay",
 };
 
 export function parseMenuTarget(id: string): MenuTarget | null {
-	if (id === "wall" || id === "rail" || id === "health") return { kind: id };
+	if (id === "wall" || id === "rail" || id === "health" || id === "replay") return { kind: id };
 	if (id === "ungrouped") return { kind: "group", group: null };
 	if (id === "all") return { kind: "view", ref: { kind: "all" } };
 	const [kind, value] = id.split(/:(.*)/);

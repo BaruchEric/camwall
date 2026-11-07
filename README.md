@@ -58,7 +58,9 @@ The host running Camwall must be able to reach the cameras' RTSP port. Streams m
 
 Camwall plays footage that already sits on a recorder. It speaks the private protocol of Unix CCTV and Eyemax Magic recorders, the ones the CMS desktop client talks to on port 8780. Other brands have live view only.
 
-Open Settings, then Recorders, and add the recorder's address. Camwall logs in to check it, then links every camera whose stream comes from that address, reading the channel from paths like `mainStream6`. Press `P` on a tile, or use the tile's clock button or its right-click menu.
+Open Settings, then Recorders, and add the recorder's address. Camwall logs in to check it, then links every camera whose stream comes from that address, reading the channel from paths like `mainStream6`.
+
+Once a camera is linked, a Live and Playback switch appears in the top bar. Playback starts with the camera you're looking at. You can also press `P` on a tile, or use the tile's clock button or its right-click menu. While it plays, the camera list picks what plays and keeps the moment, cameras with no recorder are dimmed, and a right click on the footage holds the controls. Copy link to this moment gives an address like `?replay=gate&at=2026-11-06T10:05:00` that opens on that camera at that time.
 
 | Key             | Does                                 |
 | --------------- | ------------------------------------ |
@@ -66,7 +68,7 @@ Open Settings, then Recorders, and add the recorder's address. Camwall logs in t
 | `Left`, `Right` | Back or forward 10 seconds           |
 | `[`, `]`        | Previous or next camera, same moment |
 | `S`             | Save a snapshot                      |
-| `Esc`           | Back to the wall                     |
+| `P`, `Esc`      | Back to live                         |
 
 In `config.json` a recorder goes in `recorders`, and a camera points at it with `"replay": { "recorder": "<id>", "channel": 6 }`. Set `replay` by hand when a camera's stream doesn't name its channel.
 

@@ -9,21 +9,30 @@ import { dragId, menuId, refKey, type ViewRef } from "@/web/lib/wall";
 function CameraRow({
 	camera,
 	state,
+	replay,
 	onPick,
 }: {
 	camera: PublicCamera;
 	state: PlayerState | undefined;
+	replay: CameraId | null;
 	onPick: (camera: CameraId) => void;
 }) {
 	const { setNodeRef, listeners, isDragging } = useDraggable({ id: dragId.camera(camera.id) });
+	const classes = ["rail-camera"];
+	if (isDragging) classes.push("rail-camera-dragging");
+	if (replay === camera.id) classes.push("rail-camera-on");
+	const unrecorded = replay !== null && !camera.hasReplay;
 	return (
 		<li>
 			<button
 				type="button"
 				ref={setNodeRef}
-				className={isDragging ? "rail-camera rail-camera-dragging" : "rail-camera"}
+				className={classes.join(" ")}
 				data-state={state ?? "idle"}
+				data-replay={unrecorded ? "none" : undefined}
 				data-menu={menuId.camera(camera.id)}
+				aria-current={replay === camera.id ? "true" : undefined}
+				title={unrecorded ? "No recorder linked, so nothing to play back" : undefined}
 				onClick={() => onPick(camera.id)}
 				{...listeners}
 			>
@@ -41,6 +50,7 @@ function GroupSection({
 	current,
 	cameras,
 	statuses,
+	replay,
 	collapsed,
 	onToggle,
 	onOpen,
@@ -52,6 +62,7 @@ function GroupSection({
 	current: string;
 	cameras: PublicCamera[];
 	statuses: ReadonlyMap<CameraId, PlayerState>;
+	replay: CameraId | null;
 	collapsed: boolean;
 	onToggle: () => void;
 	onOpen: (ref: ViewRef) => void;
@@ -88,6 +99,7 @@ function GroupSection({
 							key={camera.id}
 							camera={camera}
 							state={statuses.get(camera.id)}
+							replay={replay}
 							onPick={onPick}
 						/>
 					))}
@@ -101,6 +113,7 @@ export function Rail({
 	state,
 	current,
 	open,
+	replay,
 	dragging,
 	collapsed,
 	onToggle,
@@ -112,6 +125,8 @@ export function Rail({
 	state: AppState;
 	current: string;
 	open: boolean;
+	/** The camera in playback. The list then picks what plays. */
+	replay: CameraId | null;
 	dragging: boolean;
 	collapsed: ReadonlySet<string>;
 	onToggle: (key: string) => void;
@@ -190,6 +205,7 @@ export function Rail({
 						current={current}
 						cameras={matching.filter((c) => c.groupId === group.id)}
 						statuses={statuses}
+						replay={replay}
 						collapsed={!searching && collapsed.has(group.id)}
 						onToggle={() => onToggle(group.id)}
 						onOpen={onOpen}
@@ -204,6 +220,7 @@ export function Rail({
 						current={current}
 						cameras={ungrouped}
 						statuses={statuses}
+						replay={replay}
 						collapsed={!searching && collapsed.has("ungrouped")}
 						onToggle={() => onToggle("ungrouped")}
 						onOpen={onOpen}

@@ -4,10 +4,12 @@ import {
 	barsIn,
 	clockText,
 	fractionOf,
+	momentText,
 	monthCells,
 	msAt,
 	nextRange,
 	openingMs,
+	parseMoment,
 	stepDay,
 	ticksIn,
 	timelineWindow,
@@ -126,5 +128,27 @@ describe("gaps in the buffer", () => {
 
 	test("the end of the last range goes nowhere", () => {
 		expect(nextRange(ranges, 59.95)).toBeNull();
+	});
+});
+
+describe("moment links", () => {
+	test("go there and back", () => {
+		const moment = { day: "2026-11-07", ms: 51_022_000 };
+		expect(momentText(moment)).toBe("2026-11-07T14:10:22");
+		expect(parseMoment(momentText(moment))).toEqual(moment);
+	});
+
+	test("refuse anything that is not a time of day", () => {
+		for (const junk of [
+			null,
+			"",
+			"2026-11-07",
+			"2026-11-07T24:00:00",
+			"2026-11-07T14:60:00",
+			"2026-02-30T10:00:00",
+			"x",
+		]) {
+			expect(parseMoment(junk)).toBeNull();
+		}
 	});
 });

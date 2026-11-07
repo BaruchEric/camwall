@@ -93,6 +93,27 @@ export function monthCells(year: number, month: number, days: ReadonlySet<string
 	return cells;
 }
 
+/** A moment on the recorder's clock, which is what a link to footage carries. */
+export type Moment = { day: string; ms: number };
+
+/** Reads as 2026-11-07T14:03:22, without a zone, because the recorder keeps none. */
+export function momentText({ day, ms }: Moment): string {
+	return `${day}T${clockText(ms)}`;
+}
+
+export function parseMoment(text: string | null): Moment | null {
+	const match = text?.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})$/);
+	const day = match?.[1];
+	if (!match || !day) return null;
+	const [hours, minutes, seconds] = match.slice(2).map(Number);
+	if (hours === undefined || minutes === undefined || seconds === undefined) return null;
+	if (hours > 23 || minutes > 59 || seconds > 59) return null;
+	const [year = 0, month = 0, date = 0] = day.split("-").map(Number);
+	const real = new Date(year, month - 1, date);
+	if (real.getMonth() !== month - 1 || real.getDate() !== date) return null;
+	return { day, ms: ((hours * 60 + minutes) * 60 + seconds) * 1000 };
+}
+
 /** The day before or after this one that holds footage. */
 export function stepDay(days: readonly string[], day: string, delta: 1 | -1): string | null {
 	const later = days.filter((candidate) => candidate > day);

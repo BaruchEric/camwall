@@ -150,6 +150,43 @@ ul {
 	flex: 1;
 }
 
+.modes {
+	display: inline-flex;
+	flex: none;
+	gap: 2px;
+	margin: 0 2px;
+	padding: 2px;
+	border: 1px solid var(--line);
+	border-radius: 5px;
+}
+
+.mode {
+	display: inline-flex;
+	align-items: center;
+	gap: 6px;
+	height: 26px;
+	padding: 0 10px;
+	border-radius: 3px;
+	color: var(--dim);
+	font: 500 14px / 1 var(--umd);
+}
+
+.mode:hover {
+	background: var(--panel-up);
+	color: var(--text);
+}
+
+.mode-on,
+.mode-on:hover {
+	background: var(--panel-up);
+	color: var(--text);
+}
+
+/* Footage that isn't live gets the warning colour, so nobody takes it for now. */
+.mode-on[data-mode="replay"] {
+	color: var(--amber);
+}
+
 .topbar-tools {
 	display: flex;
 	align-items: center;
@@ -509,6 +546,16 @@ ul {
 
 .rail-camera-dragging {
 	opacity: 0.4;
+}
+
+.rail-camera-on,
+.rail-camera-on:hover {
+	background: var(--panel-up);
+	color: var(--amber);
+}
+
+.rail-camera[data-replay="none"] {
+	opacity: 0.45;
 }
 
 .rail-foot {
@@ -955,6 +1002,16 @@ label {
 	margin: 0;
 }
 
+.keys-section + .keys-section {
+	margin-top: 16px;
+}
+
+.keys-title {
+	margin: 0 0 8px;
+	font: 600 13px / 1 var(--ui);
+	color: var(--dim);
+}
+
 /* Phone: the rail becomes a drawer and the wall scrolls two columns. */
 
 .scrim {
@@ -990,6 +1047,14 @@ label {
 	.clock,
 	.health,
 	.pager {
+		display: none;
+	}
+
+	.mode {
+		padding: 0 7px;
+	}
+
+	.mode-text {
 		display: none;
 	}
 
