@@ -72,7 +72,7 @@ In `config.json` a recorder goes in `recorders`, and a camera points at it with 
 
 What to expect:
 
-- It is tested on one recorder: a Magic-U 4M 32 on firmware 2.3.7.11, with a blank admin password. Logging in with a real password follows the same scheme but nobody has tried it, so open an issue if it fails.
+- It is tested on one model, the Magic-U 4M 32. Password login follows the vendor client's scheme but hasn't been tried, so open an issue if it fails.
 - Playback covers one camera at a time. It doesn't play in reverse or export clips.
 - Gaps in a motion-recorded channel are skipped, not played. Footage from the last few seconds isn't readable yet, so a replay that catches up with the present stops there until you press play again.
 - Speed depends on the link. 8x on the big stream needs about 22 Mbit/s from the recorder to the viewer. Switch to SD if the picture keeps waiting.
