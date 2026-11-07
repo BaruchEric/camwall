@@ -1,7 +1,14 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { AddressInfo, Server } from "node:net";
 import { join } from "node:path";
-import { minutesToSpans, readDays, readSpans, testRecorder } from "@/server/dvr/client";
+import {
+	mergeSpans,
+	minutesToSpans,
+	readChannelSpans,
+	readDays,
+	readSpans,
+	testRecorder,
+} from "@/server/dvr/client";
 import { framesOf, startFakeRecorder } from "@/server/dvr/fake";
 import {
 	encode,
@@ -15,7 +22,13 @@ import {
 	usedSlots,
 	words,
 } from "@/server/dvr/protocol";
-import { nextRecorded, type ReplayOutput, ReplaySession } from "@/server/replay";
+import {
+	nextRecorded,
+	ReplayMux,
+	type ReplayOutput,
+	type ReplayRequest,
+	ReplaySession,
+} from "@/server/replay";
 import { type Camera, channelOf, linkCameras, type Recorder, RecorderId } from "@/shared/schema";
 
 const clips = join(import.meta.dir, "../demo");
@@ -86,6 +99,21 @@ describe("spans", () => {
 			[0, 180_000],
 			[600_000, 660_000],
 		]);
+	});
+
+	test("from several channels merge into one timeline", () => {
+		expect(
+			mergeSpans([
+				[600_000, 660_000],
+				[0, 120_000],
+				[60_000, 180_000],
+				[660_000, 720_000],
+			]),
+		).toEqual([
+			[0, 180_000],
+			[600_000, 720_000],
+		]);
+		expect(mergeSpans([])).toEqual([]);
 	});
 
 	test("playback stays put inside a span and jumps across a gap", () => {
@@ -169,17 +197,35 @@ describe("against a fake recorder", () => {
 		expect(spans[1]).toEqual([3_600_000, 4_200_000]);
 	});
 
+	test("one connection reads several channels' spans", async () => {
+		const spans = await readChannelSpans(address, today(), [1, 2]);
+		expect(spans.get(1)).toEqual([[0, 86_400_000]]);
+		expect(spans.get(2)).toHaveLength(24);
+	});
+
 	function collect() {
 		const events: string[] = [];
 		const sent: Uint8Array[] = [];
+		const tracks: number[] = [];
 		const out: ReplayOutput = {
-			event: (event) => events.push(event.type),
-			bytes: (data) => sent.push(data),
+			event: (event) => events.push(event.type === "mse" ? `mse ${event.track}` : event.type),
+			bytes: (track, data) => {
+				tracks.push(track);
+				sent.push(data);
+			},
 			queued: () => 0,
 			close: () => undefined,
 		};
-		return { events, sent, out };
+		return { events, sent, tracks, out };
 	}
+
+	const request = (channel: number, ms: number): ReplayRequest => ({
+		address,
+		channels: [{ channel, tracks: [0] }],
+		quality: "sub",
+		day: today(),
+		ms,
+	});
 
 	const until = async (done: () => boolean) => {
 		for (let i = 0; i < 300 && !done(); i++) await Bun.sleep(10);
@@ -188,24 +234,18 @@ describe("against a fake recorder", () => {
 
 	test("a replay opens with the codec, then an init segment, then fragments", async () => {
 		const { events, sent, out } = collect();
-		const session = new ReplaySession(
-			{ address, channel: 1, quality: "sub", day: today(), ms: 3_600_000 },
-			out,
-		);
+		const session = new ReplaySession(request(1, 3_600_000), out);
 		await session.start();
 		await until(() => sent.length > 5);
 		session.stop();
-		expect(events[0]).toBe("mse");
+		expect(events[0]).toBe("mse 0");
 		expect(Buffer.from(sent[0] ?? []).toString("latin1", 4, 8)).toBe("ftyp");
 		expect(Buffer.from(sent[1] ?? []).toString("latin1", 4, 8)).toBe("moof");
 	});
 
 	test("it stops pulling once the viewer has enough, and resumes when the playhead moves", async () => {
 		const { sent, out } = collect();
-		const session = new ReplaySession(
-			{ address, channel: 1, quality: "sub", day: today(), ms: 3_600_000 },
-			out,
-		);
+		const session = new ReplaySession(request(1, 3_600_000), out);
 		await session.start();
 		await until(() => sent.length > 80);
 		await Bun.sleep(150);
@@ -219,12 +259,9 @@ describe("against a fake recorder", () => {
 
 	test("a seek is announced before the frames from the new spot", async () => {
 		const { events, out } = collect();
-		const session = new ReplaySession(
-			{ address, channel: 1, quality: "sub", day: today(), ms: 0 },
-			out,
-		);
+		const session = new ReplaySession(request(1, 0), out);
 		await session.start();
-		await until(() => events.includes("mse"));
+		await until(() => events.includes("mse 0"));
 		session.handle({ type: "seek", ms: 7_200_000 });
 		await until(() => events.includes("seeked"));
 		session.stop();
@@ -232,10 +269,7 @@ describe("against a fake recorder", () => {
 
 	test("a channel that went quiet jumps to its next recording", async () => {
 		const { sent, out } = collect();
-		const session = new ReplaySession(
-			{ address, channel: 2, quality: "sub", day: today(), ms: 590_000 },
-			out,
-		);
+		const session = new ReplaySession(request(2, 590_000), out);
 		await session.start();
 		const newest = () => {
 			const tfdt = Buffer.from(sent.at(-1) ?? []);
@@ -247,16 +281,108 @@ describe("against a fake recorder", () => {
 		session.stop();
 	});
 
-	test("the last recording of a day ends the replay", async () => {
-		const { events, out } = collect();
+	test("several channels play on one clock, each on its own track", async () => {
+		const { events, sent, tracks, out } = collect();
 		const session = new ReplaySession(
-			{ address, channel: 2, quality: "sub", day: today(), ms: 83_395_000 },
+			{
+				address,
+				channels: [
+					{ channel: 1, tracks: [0] },
+					{ channel: 3, tracks: [1, 2] },
+				],
+				quality: "sub",
+				day: today(),
+				ms: 3_600_000,
+			},
 			out,
 		);
+		await session.start();
+		await until(() => new Set(tracks).size === 3 && sent.length > 30);
+		session.stop();
+		expect(events.filter((e) => e.startsWith("mse")).toSorted()).toEqual([
+			"mse 0",
+			"mse 1",
+			"mse 2",
+		]);
+		const decodeTime = (data: Uint8Array) => {
+			const box = Buffer.from(data);
+			const at = box.indexOf("tfdt", 0, "latin1");
+			return at < 0 ? null : box.readUInt32BE(at + 12);
+		};
+		const firstOn = (track: number) =>
+			sent.map(decodeTime).find((time, i) => tracks[i] === track && time !== null);
+		expect(firstOn(0)).toBe(firstOn(1));
+		expect(firstOn(1)).toBe(firstOn(2));
+	});
+
+	test("the last recording of a day ends the replay", async () => {
+		const { events, out } = collect();
+		const session = new ReplaySession(request(2, 83_395_000), out);
 		await session.start();
 		session.handle({ type: "at", ms: 83_400_000 });
 		await until(() => events.includes("end"));
 		session.stop();
+	});
+});
+
+describe("two recorders behind one viewer", () => {
+	let first: Server;
+	let second: Server;
+	const addressOf = (server: Server) => ({
+		host: "127.0.0.1",
+		port: (server.address() as AddressInfo).port,
+		user: "admin",
+		password: "",
+	});
+
+	beforeAll(async () => {
+		first = await startFakeRecorder(clips);
+		second = await startFakeRecorder(clips);
+	});
+
+	afterAll(() => {
+		first.close();
+		second.close();
+	});
+
+	test("a seek is done once both recorders have moved, and said once", async () => {
+		const events: string[] = [];
+		const tracks = new Set<number>();
+		const now = new Date();
+		const pad = (n: number) => String(n).padStart(2, "0");
+		const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+		const mux = new ReplayMux(
+			[
+				{
+					address: addressOf(first),
+					channels: [{ channel: 1, tracks: [0] }],
+					quality: "sub",
+					day,
+					ms: 0,
+				},
+				{
+					address: addressOf(second),
+					channels: [{ channel: 4, tracks: [1] }],
+					quality: "sub",
+					day,
+					ms: 0,
+				},
+			],
+			{
+				event: (event) => events.push(event.type),
+				bytes: (track) => tracks.add(track),
+				queued: () => 0,
+				close: () => undefined,
+			},
+		);
+		await mux.start();
+		for (let i = 0; i < 300 && tracks.size < 2; i++) await Bun.sleep(10);
+		expect([...tracks].toSorted()).toEqual([0, 1]);
+		mux.handle({ type: "seek", ms: 7_200_000 });
+		for (let i = 0; i < 300 && !events.includes("seeked"); i++) await Bun.sleep(10);
+		await Bun.sleep(100);
+		mux.stop();
+		expect(events.filter((e) => e === "seeked")).toHaveLength(1);
 	});
 });
 

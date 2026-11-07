@@ -2,11 +2,12 @@ import {
 	DvrConnection as Connection,
 	type DvrConnection,
 	dateId,
+	mergeSpans,
 	moveReplay,
 	openReplay,
 	type RecorderAddress,
 	type ReplayTarget,
-	readSpans,
+	readChannelSpans,
 } from "@/server/dvr/client";
 import {
 	Code,
@@ -43,15 +44,19 @@ const MAX_FRAME_MS = 1000;
 
 export type ReplayOutput = {
 	event: (event: ReplayEvent) => void;
-	bytes: (data: Uint8Array) => void;
+	/** Video for one track: the place its camera holds in the viewer's list. */
+	bytes: (track: number, data: Uint8Array) => void;
 	/** Bytes still waiting to reach the viewer. */
 	queued: () => number;
 	close: () => void;
 };
 
+/** A recorder channel, and the tracks that show it. Two tiles may show one channel. */
+export type ReplayChannel = { channel: number; tracks: readonly number[] };
+
 export type ReplayRequest = {
 	address: RecorderAddress;
-	channel: number;
+	channels: readonly ReplayChannel[];
 	quality: Quality;
 	day: string;
 	ms: number;
@@ -64,15 +69,26 @@ export function nextRecorded(spans: readonly Span[], clock: number): number | nu
 	return Math.max(span[0], clock);
 }
 
+type ChannelState = {
+	tracks: readonly number[];
+	started: boolean;
+	/** True from a seek until this channel's first key frame after it. */
+	settling: boolean;
+	held: VideoFrame | null;
+	sequence: number;
+};
+
 /**
- * Feeds one viewer. The recorder only moves when it is pulled, which makes this loop the
- * throttle: it pulls until the viewer has enough, so pausing needs no message at all.
+ * Feeds one viewer from one recorder. The recorder plays every channel asked for on one clock,
+ * and only moves when it is pulled, which makes this loop the throttle: it pulls until the
+ * viewer has enough, so pausing needs no message at all.
  */
 export class ReplaySession {
 	#request: ReplayRequest;
 	#out: ReplayOutput;
 	#connection: DvrConnection | null = null;
 	#target: ReplayTarget | null = null;
+	#channels: Map<number, ChannelState>;
 	#timer: ReturnType<typeof setInterval> | undefined;
 	#stopped = false;
 	#rate = 1;
@@ -80,15 +96,12 @@ export class ReplaySession {
 	#clock: number;
 	#lastClock = -1;
 	#stuck = 0;
+	/** The newest frame from any channel since the last move. */
 	#lastFrameMs: number | null = null;
-	#held: VideoFrame | null = null;
-	/** True from a seek until the first key frame after it. */
-	#settling = true;
 	#moving = false;
 	#queuedMove: { ms: number; announce: boolean } | null = null;
-	#started = false;
-	#sequence = 0;
 	#ended = false;
+	/** Every channel's recordings, joined. Silence is skipped only where all of them are quiet. */
 	#spans: Span[] | null = null;
 	#spansAt = 0;
 
@@ -97,10 +110,16 @@ export class ReplaySession {
 		this.#out = out;
 		this.#playhead = request.ms;
 		this.#clock = request.ms;
+		this.#channels = new Map(
+			request.channels.map(({ channel, tracks }) => [
+				channel,
+				{ tracks, started: false, settling: true, held: null, sequence: 0 },
+			]),
+		);
 	}
 
 	async start(): Promise<void> {
-		const { address, channel, quality, day, ms } = this.#request;
+		const { address, quality, day, ms } = this.#request;
 		try {
 			const connection = await Connection.open(address);
 			if (this.#stopped) {
@@ -112,7 +131,7 @@ export class ReplaySession {
 			connection.onClose = (reason) => this.#lost(reason);
 			const id = await dateId(connection, day);
 			if (id === 0) throw new Error("The recorder has nothing for that day");
-			this.#target = { id, channel, quality };
+			this.#target = { id, channels: [...this.#channels.keys()], quality };
 			void this.#refreshSpans();
 			await openReplay(connection, this.#target, ms);
 			this.#timer = setInterval(() => this.#tick(), TICK_MS);
@@ -162,9 +181,10 @@ export class ReplaySession {
 
 	async #refreshSpans(): Promise<void> {
 		this.#spansAt = Date.now();
-		const { address, day, channel } = this.#request;
+		const { address, day } = this.#request;
 		try {
-			this.#spans = await readSpans(address, day, channel);
+			const found = await readChannelSpans(address, day, [...this.#channels.keys()]);
+			this.#spans = mergeSpans([...found.values()].flat());
 		} catch (error) {
 			log.warn("replay could not read the timeline", { error: String(error) });
 		}
@@ -183,8 +203,10 @@ export class ReplaySession {
 		const target = this.#target;
 		if (!connection || !target) return;
 		this.#moving = true;
-		this.#settling = true;
-		this.#held = null;
+		for (const channel of this.#channels.values()) {
+			channel.settling = true;
+			channel.held = null;
+		}
 		this.#ended = false;
 		this.#stuck = 0;
 		this.#clock = ms;
@@ -210,46 +232,52 @@ export class ReplaySession {
 			return;
 		}
 		const frame = parseVideo(message);
-		if (!frame || frame.channel !== this.#request.channel || this.#moving) return;
-		if (this.#settling) {
+		const channel = frame ? this.#channels.get(frame.channel) : undefined;
+		if (!frame || !channel || this.#moving) return;
+		if (channel.settling) {
 			if (!frame.key) return;
-			this.#settling = false;
+			channel.settling = false;
 		}
-		if (!this.#started && !this.#begin(frame)) return;
-		this.#lastFrameMs = frame.ms;
-		const held = this.#held;
-		this.#held = frame;
-		if (held) this.#emit(held, frame.ms - held.ms);
+		if (!channel.started && !this.#begin(channel, frame)) return;
+		this.#lastFrameMs = Math.max(this.#lastFrameMs ?? 0, frame.ms);
+		const held = channel.held;
+		channel.held = frame;
+		if (held) this.#emit(channel, held, frame.ms - held.ms);
 	}
 
-	#begin(frame: VideoFrame): boolean {
+	#begin(channel: ChannelState, frame: VideoFrame): boolean {
 		const sets = findParameterSets(frame.data);
 		if (!sets) return false;
-		this.#started = true;
-		this.#out.event({ type: "mse", value: `video/mp4; codecs="${codecOf(sets.sps)}"` });
-		this.#out.bytes(initSegment({ ...sets, width: frame.width, height: frame.height }));
+		channel.started = true;
+		const value = `video/mp4; codecs="${codecOf(sets.sps)}"`;
+		const init = initSegment({ ...sets, width: frame.width, height: frame.height });
+		for (const track of channel.tracks) {
+			this.#out.event({ type: "mse", track, value });
+			this.#out.bytes(track, init);
+		}
 		return true;
 	}
 
-	#emit(frame: VideoFrame, gap: number): void {
-		this.#sequence++;
-		this.#out.bytes(
-			fragment({
-				sequence: this.#sequence,
-				dts: frame.ms,
-				duration: gap > 0 && gap <= MAX_FRAME_MS ? gap : FALLBACK_FRAME_MS,
-				key: frame.key,
-				data: frame.data,
-			}),
-		);
+	#emit(channel: ChannelState, frame: VideoFrame, gap: number): void {
+		channel.sequence++;
+		const data = fragment({
+			sequence: channel.sequence,
+			dts: frame.ms,
+			duration: gap > 0 && gap <= MAX_FRAME_MS ? gap : FALLBACK_FRAME_MS,
+			key: frame.key,
+			data: frame.data,
+		});
+		for (const track of channel.tracks) this.#out.bytes(track, data);
 	}
 
 	#finish(): void {
 		if (this.#ended) return;
 		this.#ended = true;
-		const held = this.#held;
-		this.#held = null;
-		if (held) this.#emit(held, FALLBACK_FRAME_MS);
+		for (const channel of this.#channels.values()) {
+			const held = channel.held;
+			channel.held = null;
+			if (held) this.#emit(channel, held, FALLBACK_FRAME_MS);
+		}
 		this.#out.event({ type: "end" });
 	}
 
@@ -287,5 +315,58 @@ export class ReplaySession {
 			return;
 		}
 		for (let i = 0; i < PULLS; i++) connection.send(REPLAY, Code.pull);
+	}
+}
+
+/**
+ * One viewer's replay across however many recorders its cameras sit on, one session each. A
+ * seek counts as done, and the footage as over, only once every recorder has said so.
+ */
+export class ReplayMux {
+	#sessions: ReplaySession[];
+	#out: ReplayOutput;
+	#seeking = new Set<ReplaySession>();
+	#ended = new Set<ReplaySession>();
+
+	constructor(requests: readonly ReplayRequest[], out: ReplayOutput) {
+		this.#out = out;
+		this.#sessions = requests.map((request) => {
+			const session: ReplaySession = new ReplaySession(request, {
+				...out,
+				event: (event) => this.#event(session, event),
+			});
+			return session;
+		});
+	}
+
+	start(): Promise<void> {
+		return Promise.all(this.#sessions.map((session) => session.start())).then(() => undefined);
+	}
+
+	stop(): void {
+		for (const session of this.#sessions) session.stop();
+	}
+
+	handle(command: ReplayCommand): void {
+		if (command.type === "seek") {
+			this.#seeking = new Set(this.#sessions);
+			this.#ended.clear();
+		}
+		for (const session of this.#sessions) session.handle(command);
+	}
+
+	#event(session: ReplaySession, event: ReplayEvent): void {
+		switch (event.type) {
+			case "seeked":
+				this.#seeking.delete(session);
+				if (this.#seeking.size === 0) this.#out.event(event);
+				return;
+			case "end":
+				this.#ended.add(session);
+				if (this.#ended.size === this.#sessions.length) this.#out.event(event);
+				return;
+			default:
+				this.#out.event(event);
+		}
 	}
 }

@@ -1702,8 +1702,61 @@ label {
 	max-width: 340px;
 }
 
-.replay-picture .picture-note button {
+.replay-picture .picture-note button,
+.replay-wall-note .picture-note button {
 	pointer-events: auto;
+}
+
+/* The playback wall lays its tiles out the way the live wall does, above one shared timeline. */
+
+.replay-grid {
+	position: relative;
+	flex: 1;
+	min-height: 0;
+	display: grid;
+	place-items: center;
+	overflow: hidden;
+}
+
+.replay-grid-scroll {
+	display: block;
+	overflow-y: auto;
+}
+
+.replay-wall-note {
+	position: absolute;
+	z-index: 2;
+	top: 10px;
+	left: 50%;
+	transform: translateX(-50%);
+	max-width: calc(100% - 20px);
+	padding: 8px 14px;
+	border-radius: 4px;
+	background: rgb(11 17 24 / 0.88);
+}
+
+.replay-wall-note .picture-note {
+	position: static;
+	gap: 10px;
+	color: #dbe4ec;
+	line-height: 1.3;
+	text-align: center;
+}
+
+.replay-wall-note .picture-note-lost {
+	color: #e5484d;
+}
+
+/* Nothing recorded on this camera right now, so its last picture is old. */
+.replay-tile[data-cover="none"] video {
+	opacity: 0.3;
+}
+
+.replay-clock {
+	color: #f2a93b;
+	font: 500 14px / 1 var(--umd);
+	font-variant-numeric: tabular-nums;
+	white-space: nowrap;
 }
 
 .replay-bar .chip {
@@ -1721,6 +1774,11 @@ label {
 	.replay {
 		height: auto;
 		min-height: 100%;
+	}
+
+	/* The playback wall scrolls its tiles and keeps the timeline in reach. */
+	.replay.replay-wall {
+		height: 100%;
 	}
 
 	.replay-picture {

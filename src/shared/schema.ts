@@ -180,8 +180,19 @@ export const ReplayCommand = z.discriminatedUnion("type", [
 ]);
 export type ReplayCommand = z.infer<typeof ReplayCommand>;
 
+/** One replay socket can carry several cameras. Each binary message starts with its track. */
+export const MAX_REPLAY_TRACKS = 32;
+
 export const ReplayEvent = z.discriminatedUnion("type", [
-	z.object({ type: z.literal("mse"), value: z.string() }),
+	z.object({
+		type: z.literal("mse"),
+		track: z
+			.number()
+			.int()
+			.min(0)
+			.max(MAX_REPLAY_TRACKS - 1),
+		value: z.string(),
+	}),
 	z.object({ type: z.literal("seeked"), ms: DayMs }),
 	z.object({ type: z.literal("end") }),
 	z.object({ type: z.literal("error"), value: z.string() }),

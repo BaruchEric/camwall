@@ -57,13 +57,15 @@ export const api = {
 			schema: AppState,
 			init: { method: "DELETE" },
 		}),
-	replayDays: async (camera: string): Promise<string[]> => {
-		const path = `/api/replay/${encodeURIComponent(camera)}/days`;
-		return (await call({ path, schema: ReplayDays })).days;
+	/** Every day any of these cameras holds footage for. */
+	replayDays: async (cameras: readonly string[]): Promise<string[]> => {
+		const query = new URLSearchParams({ cameras: cameras.join(",") });
+		return (await call({ path: `/api/replay/days?${query}`, schema: ReplayDays })).days;
 	},
-	replaySpans: async (camera: string, day: string) => {
-		const path = `/api/replay/${encodeURIComponent(camera)}/day/${day}`;
-		return (await call({ path, schema: ReplaySpans })).spans;
+	/** What any of these cameras recorded that day, joined into one timeline. */
+	replaySpans: async (cameras: readonly string[], day: string) => {
+		const query = new URLSearchParams({ cameras: cameras.join(","), day });
+		return (await call({ path: `/api/replay/spans?${query}`, schema: ReplaySpans })).spans;
 	},
 	discover: async (body: DiscoverRequest): Promise<DiscoveredCamera[]> => {
 		const { cameras } = await call({

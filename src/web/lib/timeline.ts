@@ -131,7 +131,15 @@ export function nextRange(
 	time: number,
 	margin = 0.1,
 ): number | null {
-	const inside = ranges.some(([start, end]) => time >= start - 0.05 && time < end - margin);
-	if (inside) return null;
+	if (covers(ranges, time, margin)) return null;
 	return ranges.find(([start]) => start > time)?.[0] ?? null;
+}
+
+/** Whether `time` sits inside a stretch, short of its end by `margin`. */
+export function covers(
+	ranges: readonly (readonly [number, number])[],
+	time: number,
+	margin = 0.1,
+): boolean {
+	return ranges.some(([start, end]) => time >= start - 0.05 && time < end - margin);
 }

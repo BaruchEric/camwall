@@ -1,11 +1,11 @@
 import { join, normalize, sep } from "node:path";
 import type { Server, ServerWebSocket, WebSocketHandler } from "bun";
 import { z } from "zod";
-import { readDays, readSpans, testRecorder } from "@/server/dvr/client";
+import { mergeSpans, readChannelSpans, readDays, testRecorder } from "@/server/dvr/client";
 import { type Go2rtc, streamName } from "@/server/go2rtc";
 import { log } from "@/server/log";
 import { discover } from "@/server/onvif";
-import { ReplaySession } from "@/server/replay";
+import { type ReplayChannel, ReplayMux, type ReplayRequest } from "@/server/replay";
 import type { Store } from "@/server/store";
 import {
 	applyPatch,
@@ -17,6 +17,7 @@ import {
 	DiscoverRequest,
 	ImportRequest,
 	linkCameras,
+	MAX_REPLAY_TRACKS,
 	NewRecorder,
 	Quality,
 	type Recorder,
@@ -52,8 +53,8 @@ type LiveSocket = {
 
 type ReplaySocket = {
 	kind: "replay";
-	source: { recorder: Recorder; channel: number; quality: Quality; day: string; ms: number };
-	session: ReplaySession | null;
+	requests: ReplayRequest[];
+	session: ReplayMux | null;
 };
 
 export type SocketData = LiveSocket | ReplaySocket;
@@ -94,6 +95,28 @@ function replaySource(config: Config, id: string | undefined) {
 	const camera = config.cameras.find((c) => c.id === id);
 	const recorder = config.recorders.find((r) => r.id === camera?.replay?.recorder);
 	return camera?.replay && recorder ? { recorder, channel: camera.replay.channel } : null;
+}
+
+type RecorderChannels = { recorder: Recorder; channels: ReplayChannel[] };
+
+/**
+ * `?cameras=a,b,c` as each recorder and the channels it plays. A camera's place in the list is
+ * its track. Null when the list is empty, too long, or names a camera with no recordings.
+ */
+function replaySources(config: Config, list: string | null): RecorderChannels[] | null {
+	const ids = list?.split(",") ?? [];
+	if (ids.length === 0 || ids.length > MAX_REPLAY_TRACKS) return null;
+	const byRecorder = new Map<string, RecorderChannels>();
+	for (const [track, id] of ids.entries()) {
+		const source = replaySource(config, id);
+		if (!source) return null;
+		const entry = byRecorder.get(source.recorder.id) ?? { recorder: source.recorder, channels: [] };
+		const channel = entry.channels.find((c) => c.channel === source.channel);
+		if (channel) channel.tracks = [...channel.tracks, track];
+		else entry.channels.push({ channel: source.channel, tracks: [track] });
+		byRecorder.set(source.recorder.id, entry);
+	}
+	return [...byRecorder.values()];
 }
 
 function firstIssue(error: z.ZodError): string {
@@ -215,16 +238,26 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 			return json(toPublic(next));
 		}
 
-		const days = /^\/api\/replay\/([^/]+)\/days$/.exec(pathname);
-		const spans = /^\/api\/replay\/([^/]+)\/day\/([^/]+)$/.exec(pathname);
-		if (request.method === "GET" && (days || spans)) {
-			const source = replaySource(store.config, (days ?? spans)?.[1]);
-			if (!source) return problem("That camera has no recordings", 404);
+		if (route === "GET /api/replay/days" || route === "GET /api/replay/spans") {
+			const sources = replaySources(store.config, url.searchParams.get("cameras"));
+			if (!sources) return problem("Those cameras have no recordings", 404);
 			try {
-				if (days) return json({ days: await readDays(source.recorder) });
-				const day = Day.safeParse(spans?.[2]);
+				if (route === "GET /api/replay/days") {
+					const found = await Promise.all(sources.map(({ recorder }) => readDays(recorder)));
+					return json({ days: [...new Set(found.flat())].sort() });
+				}
+				const day = Day.safeParse(url.searchParams.get("day"));
 				if (!day.success) return problem("Use a date like 2026-01-31", 400);
-				return json({ spans: await readSpans(source.recorder, day.data, source.channel) });
+				const found = await Promise.all(
+					sources.map(({ recorder, channels }) =>
+						readChannelSpans(
+							recorder,
+							day.data,
+							channels.map((c) => c.channel),
+						),
+					),
+				);
+				return json({ spans: mergeSpans(found.flatMap((map) => [...map.values()].flat())) });
 			} catch (error) {
 				const message = error instanceof Error ? error.message : "The recorder did not answer";
 				return problem(message, 502);
@@ -234,31 +267,33 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 		return problem("Not found", 404);
 	}
 
+	/** `/ws/replay?cameras=a,b&quality=sub&day=2026-11-06&ms=0`: one socket for a whole wall. */
 	function upgradeReplay(
 		request: Request,
 		server: Server<SocketData>,
 		url: URL,
-		match: RegExpExecArray,
 	): Response | undefined {
-		const source = replaySource(store.config, match[1]);
-		if (!source) return problem("That camera has no recordings", 404);
-		const quality = Quality.safeParse(match[2]);
+		const sources = replaySources(store.config, url.searchParams.get("cameras"));
+		if (!sources) return problem("Those cameras have no recordings", 404);
+		const quality = Quality.safeParse(url.searchParams.get("quality"));
 		const day = Day.safeParse(url.searchParams.get("day"));
 		const ms = Number(url.searchParams.get("ms"));
 		if (!quality.success || !day.success || !Number.isInteger(ms) || ms < 0 || ms >= DAY_MS) {
 			return problem("Not found", 404);
 		}
-		const data: SocketData = {
-			kind: "replay",
-			source: { ...source, quality: quality.data, day: day.data, ms },
-			session: null,
-		};
+		const requests = sources.map(({ recorder, channels }) => ({
+			address: recorder,
+			channels,
+			quality: quality.data,
+			day: day.data,
+			ms,
+		}));
+		const data: SocketData = { kind: "replay", requests, session: null };
 		return server.upgrade(request, { data }) ? undefined : problem("Upgrade failed", 400);
 	}
 
 	function upgrade(request: Request, server: Server<SocketData>, url: URL): Response | undefined {
-		const replay = /^\/ws\/replay\/([^/]+)\/([^/]+)$/.exec(url.pathname);
-		if (replay) return upgradeReplay(request, server, url, replay);
+		if (url.pathname === "/ws/replay") return upgradeReplay(request, server, url);
 		const match = /^\/ws\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 		const id = CameraId.safeParse(match?.[1]);
 		const quality = Quality.safeParse(match?.[2]);
@@ -270,16 +305,17 @@ export function createApp({ store, go2rtc, staticDir, allowedOrigins }: AppDeps)
 	}
 
 	function openReplaySocket(ws: ServerWebSocket<SocketData>, data: ReplaySocket): void {
-		const { recorder, channel, quality, day, ms } = data.source;
-		const session = new ReplaySession(
-			{ address: recorder, channel, quality, day, ms },
-			{
-				event: (event) => ws.send(JSON.stringify(event)),
-				bytes: (bytes) => ws.sendBinary(bytes),
-				queued: () => ws.getBufferedAmount(),
-				close: () => ws.close(),
+		const session = new ReplayMux(data.requests, {
+			event: (event) => ws.send(JSON.stringify(event)),
+			bytes: (track, bytes) => {
+				const tagged = new Uint8Array(bytes.length + 1);
+				tagged[0] = track;
+				tagged.set(bytes, 1);
+				ws.sendBinary(tagged);
 			},
-		);
+			queued: () => ws.getBufferedAmount(),
+			close: () => ws.close(),
+		});
 		data.session = session;
 		void session.start();
 	}

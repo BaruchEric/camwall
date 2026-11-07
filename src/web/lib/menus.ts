@@ -55,7 +55,6 @@ import {
 	type Group,
 	GroupId,
 	type PublicCamera,
-	type Quality,
 	REPLAY_RATES,
 	type ReplayRate,
 	uniqueSlug,
@@ -212,31 +211,42 @@ function replayAction(camera: PublicCamera, run: MenuCommands): MenuNode {
 
 /** Where playback stands. A menu reads it on every redraw, so its clock keeps moving. */
 export type ReplayStatus = {
-	camera: CameraId;
 	day: string | null;
 	/** Milliseconds after midnight on the recorder's clock. */
 	position: number;
 	playing: boolean;
 	rate: ReplayRate;
-	quality: Quality;
-	hasFrame: boolean;
+	/** One camera picks HD or SD. The wall may also leave it to the size of its tiles. */
+	quality: QualityChoice;
 };
 
 export type ReplayCommands = {
 	toggle: () => void;
 	skip: (ms: number) => void;
 	rate: (rate: ReplayRate) => void;
-	quality: (quality: Quality) => void;
+	quality: (quality: QualityChoice) => void;
 	step: (delta: 1 | -1) => void;
-	snapshot: () => void;
-	copySnapshot: () => void;
+	snapshot: (camera: CameraId) => void;
+	copySnapshot: (camera: CameraId) => void;
 	copyLink: () => void;
-	/** The same camera, live, in full view. */
-	live: () => void;
+	/** One camera in full view, at the same moment. */
+	open: (camera: CameraId) => void;
+	/** What Esc does: from one camera back to the wall, from the wall back to live. */
+	close: () => void;
+	/** That camera live in full view. */
+	live: (camera: CameraId) => void;
 	leave: () => void;
 };
 
-export type ReplayMenu = { read: () => ReplayStatus; run: ReplayCommands };
+export type ReplayMenu = {
+	/** The camera in full view, or null on the playback wall. */
+	camera: CameraId | null;
+	/** The wall's cameras with recordings, which a full view steps through. */
+	cameras: readonly CameraId[];
+	read: () => ReplayStatus;
+	hasFrame: (camera: CameraId) => boolean;
+	run: ReplayCommands;
+};
 
 export type MenuContext = {
 	state: AppState;
@@ -1108,12 +1118,19 @@ function wallMenu(ctx: MenuContext): MenuSpec {
 	};
 }
 
-function replayMenu(ctx: MenuContext, replay: ReplayMenu): MenuSpec {
-	const { state, run, can } = ctx;
+function replayMenu(ctx: MenuContext, replay: ReplayMenu, tile: CameraId | null): MenuSpec {
+	const { state, wall, can } = ctx;
 	const status = replay.read();
 	const commands = replay.run;
-	const recorded = state.cameras.filter((c) => c.hasReplay);
-	const name = cameraOf(ctx, status.camera)?.name ?? status.camera;
+	const onWall = replay.camera === null;
+	// What the menu is about: the camera in full view, a tile on the wall, or the wall itself.
+	const camera = replay.camera ?? tile;
+	const name = camera
+		? (cameraOf(ctx, camera)?.name ?? camera)
+		: (resolveRef(wall.ref, state)?.name ?? "All cameras");
+	const others = replay.cameras.flatMap((id) => cameraOf(ctx, id) ?? []);
+	const qualities: QualityChoice[] = onWall ? ["auto", "main", "sub"] : ["main", "sub"];
+	const QUALITY_TEXT: Record<QualityChoice, string> = { auto: "Auto", main: "HD", sub: "SD" };
 
 	const nodes: MenuNode[] = [
 		{
@@ -1151,33 +1168,43 @@ function replayMenu(ctx: MenuContext, replay: ReplayMenu): MenuSpec {
 			kind: "segment",
 			label: "Picture",
 			value: status.quality,
-			options: [
-				{ id: "main", label: "HD" },
-				{ id: "sub", label: "SD" },
-			],
+			options: qualities.map((id) => ({ id, label: QUALITY_TEXT[id] })),
 			pick: (id) => {
-				if (id === "main" || id === "sub") commands.quality(id);
+				const choice = qualities.find((q) => q === id);
+				if (choice) commands.quality(choice);
 			},
 		},
 		RULE,
-		{
+	];
+	if (onWall && camera) {
+		nodes.push({
+			kind: "action",
+			label: "Open full view",
+			icon: Maximize2,
+			keys: "Enter",
+			run: () => commands.open(camera),
+		});
+	}
+	if (camera) {
+		const framed = replay.hasFrame(camera);
+		nodes.push({
 			kind: "action",
 			label: "Save snapshot",
 			icon: CameraIcon,
 			keys: "S",
-			disabled: !status.hasFrame,
-			note: status.hasFrame ? undefined : "No picture yet",
-			run: commands.snapshot,
-		},
-	];
-	if (can.copyImage) {
-		nodes.push({
-			kind: "action",
-			label: "Copy snapshot",
-			icon: ClipboardCopy,
-			disabled: !status.hasFrame,
-			run: commands.copySnapshot,
+			disabled: !framed,
+			note: framed ? undefined : "No picture yet",
+			run: () => commands.snapshot(camera),
 		});
+		if (can.copyImage) {
+			nodes.push({
+				kind: "action",
+				label: "Copy snapshot",
+				icon: ClipboardCopy,
+				disabled: !framed,
+				run: () => commands.copySnapshot(camera),
+			});
+		}
 	}
 	nodes.push({
 		kind: "action",
@@ -1186,7 +1213,7 @@ function replayMenu(ctx: MenuContext, replay: ReplayMenu): MenuSpec {
 		disabled: status.day === null,
 		run: commands.copyLink,
 	});
-	if (recorded.length > 1) {
+	if (!onWall && others.length > 1) {
 		nodes.push(
 			RULE,
 			{
@@ -1203,25 +1230,50 @@ function replayMenu(ctx: MenuContext, replay: ReplayMenu): MenuSpec {
 				keys: "[",
 				run: () => commands.step(-1),
 			},
-			{
-				kind: "sub",
-				label: "Switch camera",
-				icon: Replace,
-				note: name,
-				filter: recorded.length >= FILTER_FROM ? "Find a camera" : undefined,
-				items: recorded.map((camera) => ({
-					kind: "action",
-					label: camera.name,
-					checked: camera.id === status.camera,
-					run: () => run.replay(camera.id),
-				})),
-			},
 		);
 	}
+	// One camera switches among the wall's. The wall's own menu opens one; a tile's has its own row.
+	if (onWall ? camera === null && others.length > 0 : others.length > 1) {
+		nodes.push({
+			kind: "sub",
+			label: onWall ? "Open one camera" : "Switch camera",
+			icon: Replace,
+			note: onWall ? undefined : name,
+			filter: others.length >= FILTER_FROM ? "Find a camera" : undefined,
+			items: others.map((item) => ({
+				kind: "action",
+				label: item.name,
+				checked: item.id === replay.camera,
+				run: () => commands.open(item.id),
+			})),
+		});
+	}
+	nodes.push(RULE);
+	if (!onWall) {
+		nodes.push({
+			kind: "action",
+			label: "Back to the wall",
+			icon: LayoutGrid,
+			keys: "Esc",
+			run: commands.close,
+		});
+	}
+	if (camera) {
+		nodes.push({
+			kind: "action",
+			label: "Watch live",
+			icon: Radio,
+			run: () => commands.live(camera),
+		});
+	}
 	nodes.push(
-		RULE,
-		{ kind: "action", label: "Watch live", icon: Radio, run: commands.live },
-		{ kind: "action", label: "Leave playback", icon: X, keys: "Esc", run: commands.leave },
+		{
+			kind: "action",
+			label: "Leave playback",
+			icon: X,
+			keys: onWall ? "P, Esc" : "P",
+			run: commands.leave,
+		},
 		RULE,
 		...screenItems(ctx),
 	);
@@ -1338,7 +1390,7 @@ export function buildMenu(target: MenuTarget, ctx: MenuContext): MenuSpec {
 		case "health":
 			return healthMenu(ctx);
 		case "replay":
-			return ctx.replay ? replayMenu(ctx, ctx.replay) : wallMenu(ctx);
+			return ctx.replay ? replayMenu(ctx, ctx.replay, target.camera) : wallMenu(ctx);
 		default: {
 			const _exhaustive: never = target;
 			return _exhaustive;

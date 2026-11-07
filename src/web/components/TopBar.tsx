@@ -81,6 +81,7 @@ function ModeSwitch({ mode, onMode }: { mode: Mode; onMode: (mode: Mode) => void
 
 export function TopBar({
 	mode,
+	tools,
 	canReplay,
 	onMode,
 	title,
@@ -106,6 +107,8 @@ export function TopBar({
 	onHelp,
 }: {
 	mode: Mode;
+	/** Which wall tools show: all of them live, the view's on the playback wall, none for one camera. */
+	tools: "live" | "wall" | "none";
 	/** False until a recorder is linked, which leaves nothing to play back. */
 	canReplay: boolean;
 	onMode: (mode: Mode) => void;
@@ -133,6 +136,7 @@ export function TopBar({
 	onHelp: () => void;
 }) {
 	const live = mode === "live";
+	const wallTools = tools !== "none";
 	return (
 		<header className="topbar" data-menu={live ? menuId.wall : menuId.replay}>
 			<button
@@ -148,7 +152,7 @@ export function TopBar({
 			<h1 className="title" data-menu={titleMenu}>
 				{title}
 			</h1>
-			{live && edited && (
+			{wallTools && edited && (
 				<span className="edits">
 					{savedView && (
 						<button type="button" className="button button-primary" onClick={onSave}>
@@ -167,7 +171,7 @@ export function TopBar({
 					</button>
 				</span>
 			)}
-			{live && pages > 1 && (
+			{wallTools && pages > 1 && (
 				<span className="pager">
 					<button
 						type="button"
@@ -196,7 +200,7 @@ export function TopBar({
 			<Health />
 			<Clock />
 			<span className="topbar-tools">
-				{live && (
+				{wallTools && (
 					<>
 						<Menu label="Layout" button={<LayoutGrid size={17} />}>
 							{(close) => (
@@ -241,39 +245,41 @@ export function TopBar({
 						>
 							{fit === "fit" ? <Scan size={17} /> : <RectangleHorizontal size={17} />}
 						</button>
-						<Menu
-							label="Tour"
-							active={tour}
-							button={tour ? <Pause size={17} /> : <Play size={17} />}
-						>
-							{(close) => (
-								<div className="tour">
-									<button
-										type="button"
-										className="button button-primary"
-										onClick={() => {
-											onTour();
-											close();
-										}}
-									>
-										{tour ? "Stop tour" : "Start tour"}
-									</button>
-									<p className="tour-note">Steps through pages, then views.</p>
-									<fieldset className="tour-times" aria-label="Seconds per step">
-										{TOUR_SECONDS.map((seconds) => (
-											<button
-												key={seconds}
-												type="button"
-												className={seconds === tourSeconds ? "chip chip-on" : "chip"}
-												onClick={() => onTourSeconds(seconds)}
-											>
-												{seconds} s
-											</button>
-										))}
-									</fieldset>
-								</div>
-							)}
-						</Menu>
+						{tools === "live" && (
+							<Menu
+								label="Tour"
+								active={tour}
+								button={tour ? <Pause size={17} /> : <Play size={17} />}
+							>
+								{(close) => (
+									<div className="tour">
+										<button
+											type="button"
+											className="button button-primary"
+											onClick={() => {
+												onTour();
+												close();
+											}}
+										>
+											{tour ? "Stop tour" : "Start tour"}
+										</button>
+										<p className="tour-note">Steps through pages, then views.</p>
+										<fieldset className="tour-times" aria-label="Seconds per step">
+											{TOUR_SECONDS.map((seconds) => (
+												<button
+													key={seconds}
+													type="button"
+													className={seconds === tourSeconds ? "chip chip-on" : "chip"}
+													onClick={() => onTourSeconds(seconds)}
+												>
+													{seconds} s
+												</button>
+											))}
+										</fieldset>
+									</div>
+								)}
+							</Menu>
+						)}
 					</>
 				)}
 				<button

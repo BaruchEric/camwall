@@ -202,36 +202,71 @@ export function minutesToSpans(minutes: readonly number[]): Span[] {
 	return spans;
 }
 
-/** What one channel recorded on one day, to the minute. */
-export function readSpans(address: RecorderAddress, day: string, channel: number): Promise<Span[]> {
+/** Joins stretches from several channels or recorders into one sorted list without overlaps. */
+export function mergeSpans(spans: readonly Span[]): Span[] {
+	const merged: Span[] = [];
+	for (const [start, end] of spans.toSorted((a, b) => a[0] - b[0])) {
+		const last = merged.at(-1);
+		if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+		else merged.push([start, end]);
+	}
+	return merged;
+}
+
+/** What each of these channels recorded on one day, to the minute, over one connection. */
+export function readChannelSpans(
+	address: RecorderAddress,
+	day: string,
+	channels: readonly number[],
+): Promise<Map<number, Span[]>> {
 	return withConnection(address, async (connection) => {
+		const minutes = new Map(channels.map((channel) => [channel, [] as number[]]));
 		const id = await dateId(connection, day);
-		if (id === 0) return [];
-		const hours = usedSlots(await connection.request(REPLAY, Code.dayHours), channel, 24);
-		const minutes: number[] = [];
-		for (const hour of hours) {
-			const table = await connection.request(REPLAY, Code.hourMinutes, words(hour));
-			minutes.push(...usedSlots(table, channel, 60).map((minute) => hour * 60 + minute));
+		if (id !== 0) {
+			const table = await connection.request(REPLAY, Code.dayHours);
+			const hours = new Map(channels.map((channel) => [channel, usedSlots(table, channel, 24)]));
+			const wanted = [...new Set([...hours.values()].flat())].sort((a, b) => a - b);
+			for (const hour of wanted) {
+				const minuteTable = await connection.request(REPLAY, Code.hourMinutes, words(hour));
+				for (const channel of channels) {
+					if (!hours.get(channel)?.includes(hour)) continue;
+					const found = usedSlots(minuteTable, channel, 60).map((minute) => hour * 60 + minute);
+					minutes.get(channel)?.push(...found);
+				}
+			}
 		}
-		return minutesToSpans(minutes);
+		return new Map([...minutes].map(([channel, list]) => [channel, minutesToSpans(list)]));
 	});
 }
 
-/** The words a control message carries for one channel in one quality. */
-function masks(channel: number, quality: Quality) {
-	const bit = (1 << (channel - 1)) >>> 0;
-	return quality === "main" ? { main: bit, sub: 0 } : { main: 0, sub: bit };
+/** What one channel recorded on one day, to the minute. */
+export async function readSpans(
+	address: RecorderAddress,
+	day: string,
+	channel: number,
+): Promise<Span[]> {
+	return (await readChannelSpans(address, day, [channel])).get(channel) ?? [];
 }
 
-export type ReplayTarget = { id: number; channel: number; quality: Quality };
+/**
+ * The words a control message carries for a set of channels in one quality. The recorder plays
+ * every channel in the mask on one clock, which is how its own client plays several in step.
+ * A session is all main or all sub: a mixed mask came back with its timestamps out of order.
+ */
+function masks(channels: readonly number[], quality: Quality) {
+	const bits = channels.reduce((mask, channel) => (mask | (1 << (channel - 1))) >>> 0, 0);
+	return quality === "main" ? { main: bits, sub: 0 } : { main: 0, sub: bits };
+}
+
+export type ReplayTarget = { id: number; channels: readonly number[]; quality: Quality };
 
 function controlBody(
 	flags: number,
 	rate: number,
 	ms: number,
-	{ id, channel, quality }: ReplayTarget,
+	{ id, channels, quality }: ReplayTarget,
 ): Buffer {
-	const { main, sub } = masks(channel, quality);
+	const { main, sub } = masks(channels, quality);
 	return words(flags, rate, ms, 0, 0, main, id, 0, sub, 0, 0);
 }
 
@@ -241,7 +276,7 @@ export async function openReplay(
 	target: ReplayTarget,
 	ms: number,
 ): Promise<void> {
-	const { main, sub } = masks(target.channel, target.quality);
+	const { main, sub } = masks(target.channels, target.quality);
 	await connection.request(REPLAY, Code.open, words(target.id, 0, 0, main, 0, sub, 0));
 	const parked = words(Control.seek, 0, ms, 0, 0, 0, target.id, 0, 0, 0, 0);
 	await connection.request(REPLAY, Code.control, parked);

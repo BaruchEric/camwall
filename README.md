@@ -60,22 +60,28 @@ Camwall plays footage that already sits on a recorder. It speaks the private pro
 
 Open Settings, then Recorders, and add the recorder's address. Camwall logs in to check it, then links every camera whose stream comes from that address, reading the channel from paths like `mainStream6`.
 
-Once a camera is linked, a Live and Playback switch appears in the top bar. Playback starts with the camera you're looking at. You can also press `P` on a tile, or use the tile's clock button or its right-click menu. While it plays, the camera list picks what plays and keeps the moment, cameras with no recorder are dimmed, and a right click on the footage holds the controls. Copy link to this moment gives an address like `?replay=gate&at=2026-11-06T10:05:00` that opens on that camera at that time.
+Once a camera is linked, a Live and Playback switch appears in the top bar. Playback works on the wall you have open, the way live does: same layout, same pages, and every tile with a recorder plays the same moment under one timeline. The recorder plays all of them on one clock, the way its own client does, so they stay in step. A recorder plays one quality at a time, so four or fewer big tiles get HD and anything more gets SD. The quality chip can force either. A tile with nothing recorded at that moment dims and says so.
 
-| Key             | Does                                 |
-| --------------- | ------------------------------------ |
-| `Space`         | Play or pause                        |
-| `Left`, `Right` | Back or forward 10 seconds           |
-| `[`, `]`        | Previous or next camera, same moment |
-| `S`             | Save a snapshot                      |
-| `P`, `Esc`      | Back to live                         |
+Double click a tile, or select it and press `Enter`, to watch that camera alone at the same moment. `[` and `]` then step through the wall's cameras, and `Esc` goes back to the wall. Picking a camera in the list opens it the same way, and picking a view keeps playback on and shows that view. From live, `P` plays back the wall, or the camera in full view, and a tile's clock button plays back that one camera. Cameras with no recorder are dimmed in the list, and a right click on the footage holds the controls.
+
+Copy link to this moment gives an address that opens there: `?view=group:yard&replay=&at=2026-11-06T10:05:00` for a wall, or `?replay=gate&at=2026-11-06T10:05:00` for one camera.
+
+| Key                   | Does                                                         |
+| --------------------- | ------------------------------------------------------------ |
+| `Space`               | Play or pause                                                |
+| `Left`, `Right`       | Back or forward 10 seconds                                   |
+| `Enter`, double click | Open the selected tile alone, same moment                    |
+| `[`, `]`              | Previous or next page, or for one camera the next camera     |
+| `S`                   | Save a snapshot of the selected tile                         |
+| `Esc`                 | From one camera back to the wall, from the wall back to live |
+| `P`                   | Back to live                                                 |
 
 In `config.json` a recorder goes in `recorders`, and a camera points at it with `"replay": { "recorder": "<id>", "channel": 6 }`. Set `replay` by hand when a camera's stream doesn't name its channel.
 
 What to expect:
 
 - It is tested on one model, the Magic-U 4M 32. Password login follows the vendor client's scheme but hasn't been tried, so open an issue if it fails.
-- Playback covers one camera at a time. It doesn't play in reverse or export clips.
+- A wall plays up to 32 cameras from one recorder connection. Cameras on different recorders each get their own, and those clocks are only as close as the recorders' own. It doesn't play in reverse or export clips.
 - Gaps in a motion-recorded channel are skipped, not played. Footage from the last few seconds isn't readable yet, so a replay that catches up with the present stops there until you press play again.
 - Speed depends on the link. 8x on the big stream needs about 22 Mbit/s from the recorder to the viewer. Switch to SD if the picture keeps waiting.
 

@@ -297,23 +297,25 @@ describe("recorders", () => {
 	});
 
 	test("a linked camera lists its days and a day's recordings", async () => {
-		const days = await (await fetch(`${base}/api/replay/yard/days`)).json();
+		const days = await (await fetch(`${base}/api/replay/days?cameras=yard`)).json();
 		expect(days.days.length).toBeGreaterThan(0);
 		const day = days.days.at(-1);
-		const spans = await (await fetch(`${base}/api/replay/yard/day/${day}`)).json();
+		const spans = await (await fetch(`${base}/api/replay/spans?cameras=yard&day=${day}`)).json();
 		expect(spans.spans.length).toBeGreaterThan(0);
 	});
 
-	test("a camera with no recorder has nothing to list", async () => {
-		expect((await fetch(`${base}/api/replay/door/days`)).status).toBe(404);
+	test("a camera with no recorder has nothing to list, even among others", async () => {
+		expect((await fetch(`${base}/api/replay/days?cameras=door`)).status).toBe(404);
+		expect((await fetch(`${base}/api/replay/days?cameras=yard,door`)).status).toBe(404);
+		expect((await fetch(`${base}/api/replay/days`)).status).toBe(404);
 	});
 
 	test("a date that is not a date is refused", async () => {
-		expect((await fetch(`${base}/api/replay/yard/day/yesterday`)).status).toBe(400);
+		expect((await fetch(`${base}/api/replay/spans?cameras=yard&day=yesterday`)).status).toBe(400);
 	});
 
-	const replayStatus = (path: string, headers?: Record<string, string>) =>
-		fetch(`${base}/ws/replay/${path}`, {
+	const replayStatus = (query: string, headers?: Record<string, string>) =>
+		fetch(`${base}/ws/replay?${query}`, {
 			headers: {
 				connection: "Upgrade",
 				upgrade: "websocket",
@@ -324,17 +326,47 @@ describe("recorders", () => {
 		}).then((response) => response.status);
 
 	test("a replay socket refuses a foreign page", async () => {
-		const status = await replayStatus("yard/sub?day=2026-11-06&ms=0", {
+		const status = await replayStatus("cameras=yard&quality=sub&day=2026-11-06&ms=0", {
 			origin: "https://evil.example",
 		});
 		expect(status).toBe(403);
 	});
 
 	test("a replay socket refuses a bad day, a bad time and an unlinked camera", async () => {
-		expect(await replayStatus("yard/sub?day=soon&ms=0")).toBe(404);
-		expect(await replayStatus("yard/sub?day=2026-11-06&ms=90000000")).toBe(404);
-		expect(await replayStatus("yard/best?day=2026-11-06&ms=0")).toBe(404);
-		expect(await replayStatus("door/sub?day=2026-11-06&ms=0")).toBe(404);
+		expect(await replayStatus("cameras=yard&quality=sub&day=soon&ms=0")).toBe(404);
+		expect(await replayStatus("cameras=yard&quality=sub&day=2026-11-06&ms=90000000")).toBe(404);
+		expect(await replayStatus("cameras=yard&quality=best&day=2026-11-06&ms=0")).toBe(404);
+		expect(await replayStatus("cameras=door&quality=sub&day=2026-11-06&ms=0")).toBe(404);
+		expect(await replayStatus("cameras=yard,door&quality=sub&day=2026-11-06&ms=0")).toBe(404);
+		expect(await replayStatus("quality=sub&day=2026-11-06&ms=0")).toBe(404);
+		const many = Array.from({ length: 33 }, () => "yard").join(",");
+		expect(await replayStatus(`cameras=${many}&quality=sub&day=2026-11-06&ms=0`)).toBe(404);
+	});
+
+	test("one socket carries a wall, each picture tagged with its place", async () => {
+		const days = await (await fetch(`${base}/api/replay/days?cameras=yard`)).json();
+		const query = `cameras=yard,yard&quality=sub&day=${days.days.at(-1)}&ms=3600000`;
+		const socket = new WebSocket(`${base.replace("http", "ws")}/ws/replay?${query}`);
+		socket.binaryType = "arraybuffer";
+		const opened = new Set<number>();
+		const tagged = new Set<number>();
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(() => reject(new Error("No video came")), 5000);
+			socket.onmessage = (event: MessageEvent<string | ArrayBuffer>) => {
+				if (typeof event.data === "string") {
+					const parsed = JSON.parse(event.data);
+					if (parsed.type === "mse") opened.add(parsed.track);
+				} else {
+					tagged.add(new Uint8Array(event.data)[0] ?? -1);
+				}
+				if (opened.size === 2 && tagged.size === 2) {
+					clearTimeout(timer);
+					resolve();
+				}
+			};
+		});
+		socket.close();
+		expect([...tagged].toSorted()).toEqual([0, 1]);
 	});
 
 	test("removing one takes the links with it", async () => {

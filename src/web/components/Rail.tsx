@@ -6,6 +6,9 @@ import type { PlayerState } from "@/web/lib/player";
 import { useStatuses } from "@/web/lib/status";
 import { dragId, menuId, refKey, type ViewRef } from "@/web/lib/wall";
 
+/** Playback, when on, and the camera in full view if any. The camera list then picks what plays. */
+type ReplayMark = { camera: CameraId | null } | null;
+
 function CameraRow({
 	camera,
 	state,
@@ -14,13 +17,14 @@ function CameraRow({
 }: {
 	camera: PublicCamera;
 	state: PlayerState | undefined;
-	replay: CameraId | null;
+	replay: ReplayMark;
 	onPick: (camera: CameraId) => void;
 }) {
 	const { setNodeRef, listeners, isDragging } = useDraggable({ id: dragId.camera(camera.id) });
 	const classes = ["rail-camera"];
 	if (isDragging) classes.push("rail-camera-dragging");
-	if (replay === camera.id) classes.push("rail-camera-on");
+	const playing = replay !== null && replay.camera === camera.id;
+	if (playing) classes.push("rail-camera-on");
 	const unrecorded = replay !== null && !camera.hasReplay;
 	return (
 		<li>
@@ -31,7 +35,7 @@ function CameraRow({
 				data-state={state ?? "idle"}
 				data-replay={unrecorded ? "none" : undefined}
 				data-menu={menuId.camera(camera.id)}
-				aria-current={replay === camera.id ? "true" : undefined}
+				aria-current={playing ? "true" : undefined}
 				title={unrecorded ? "No recorder linked, so nothing to play back" : undefined}
 				onClick={() => onPick(camera.id)}
 				{...listeners}
@@ -62,7 +66,7 @@ function GroupSection({
 	current: string;
 	cameras: PublicCamera[];
 	statuses: ReadonlyMap<CameraId, PlayerState>;
-	replay: CameraId | null;
+	replay: ReplayMark;
 	collapsed: boolean;
 	onToggle: () => void;
 	onOpen: (ref: ViewRef) => void;
@@ -126,7 +130,7 @@ export function Rail({
 	current: string;
 	open: boolean;
 	/** The camera in playback. The list then picks what plays. */
-	replay: CameraId | null;
+	replay: ReplayMark;
 	dragging: boolean;
 	collapsed: ReadonlySet<string>;
 	onToggle: (key: string) => void;

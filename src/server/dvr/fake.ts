@@ -96,7 +96,8 @@ class Session {
 	#reader = new MessageReader();
 	#clock = 0;
 	#nextFrame = 0;
-	#channel = 0;
+	/** Every channel in the last mask, played on one clock the way the real recorder does. */
+	#channels: number[] = [];
 	#quality: keyof Clips = "sub";
 
 	constructor(socket: Socket, clips: Clips) {
@@ -167,7 +168,11 @@ class Session {
 		const sub = body.readUInt32BE(32);
 		if (main !== 0 || sub !== 0) {
 			this.#quality = main !== 0 ? "main" : "sub";
-			this.#channel = Math.log2(main || sub) + 1;
+			const mask = main || sub;
+			this.#channels = [];
+			for (let channel = 1; channel <= CHANNELS; channel++) {
+				if ((mask >>> (channel - 1)) & 1) this.#channels.push(channel);
+			}
 		}
 		if (flags === Control.seek) {
 			this.#clock = body.readUInt32BE(8);
@@ -179,17 +184,18 @@ class Session {
 	#pull(): void {
 		this.#clock += PULL_MS;
 		const clips = this.#clips[this.#quality];
-		while (this.#channel > 0 && this.#nextFrame <= this.#clock) {
+		while (this.#channels.length > 0 && this.#nextFrame <= this.#clock) {
 			const ms = Math.round(this.#nextFrame);
 			const index = Math.round(ms / FRAME_MS) % clips.length;
 			const frame = clips[index];
-			if (frame && isRecorded(this.#channel, Math.floor(ms / 60_000))) {
+			for (const channel of this.#channels) {
+				if (!frame || !isRecorded(channel, Math.floor(ms / 60_000))) continue;
 				const head = Buffer.alloc(16);
 				head.writeUInt32BE(ms, 0);
 				head.writeUInt16BE(this.#quality === "main" ? 1280 : 640, 4);
 				head.writeUInt16BE(this.#quality === "main" ? 720 : 352, 6);
 				head[8] = frame.key ? 1 : 0;
-				this.#send(REPLAY, VIDEO_BASE + this.#channel - 1, Buffer.concat([head, frame.data]));
+				this.#send(REPLAY, VIDEO_BASE + channel - 1, Buffer.concat([head, frame.data]));
 			}
 			this.#nextFrame += FRAME_MS;
 		}

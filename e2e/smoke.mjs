@@ -480,8 +480,10 @@ check("the phone layout has no sideways scroll", !overflow);
 {
 	const replay = await context.newPage();
 	replay.on("pageerror", (error) => errors.push(error.message));
-	const playhead = () => replay.evaluate(() => document.querySelector(".replay video").currentTime);
-	const replayNote = () => replay.locator(".replay .picture-note").textContent({ timeout: 500 });
+	const playhead = () =>
+		replay.evaluate(() => document.querySelector(".replay-picture video").currentTime);
+	const replayNote = () =>
+		replay.locator(".replay-picture .picture-note").textContent({ timeout: 500 });
 	async function waitPlayhead(test, timeout) {
 		const end = Date.now() + timeout;
 		while (Date.now() < end) {
@@ -490,17 +492,84 @@ check("the phone layout has no sideways scroll", !overflow);
 		}
 		return false;
 	}
-	await replay.goto(base);
+	const seconds = (text) => {
+		const [h, m, s] = (text.match(/(\d\d):(\d\d):(\d\d)/)?.slice(1) ?? []).map(Number);
+		return h * 3600 + m * 60 + s;
+	};
+	const wallTimes = () =>
+		replay.evaluate(() =>
+			[...document.querySelectorAll(".replay-wall video")]
+				.filter((v) => v.readyState >= 2 && !v.paused)
+				.map((v) => v.currentTime),
+		);
+
+	// A group plays back as a wall, every tile on the recorder's one clock.
+	await replay.goto(`${base}/?view=group:entrances`);
 	await replay.waitForSelector(".tile");
-	await replay
-		.locator(".tile")
-		.nth(1)
-		.click({ position: { x: 60, y: 60 } });
 	await replay.keyboard.press("p");
-	await replay.waitForSelector(".replay");
-	const opened = await waitPlayhead((time) => time > 0, 15_000);
+	await replay.waitForSelector(".replay-wall");
+	let times = [];
+	for (const end = Date.now() + 20_000; Date.now() < end; ) {
+		times = await wallTimes();
+		if (times.length >= 3) break;
+		await replay.waitForTimeout(250);
+	}
+	check("P plays back the whole group", times.length >= 3, `${times.length} of 4 playing`);
+	await replay.waitForTimeout(2000);
+	times = await wallTimes();
+	const spread = Math.max(...times) - Math.min(...times);
+	check(
+		"its tiles play in step",
+		times.length >= 3 && spread < 0.5,
+		`${spread.toFixed(2)} s apart`,
+	);
+	check("the address says the wall", new URL(replay.url()).searchParams.get("replay") === "");
+	check(
+		"the view's tools stay and the tour goes",
+		(await replay.locator('.topbar [aria-label="Layout"]').count()) === 1 &&
+			(await replay.locator('.topbar [aria-label="Tour"]').count()) === 0,
+	);
+	await replay.screenshot({ path: join(out, "replay-wall.png") });
+
+	const lobby = replay.locator(".replay-tile", { hasText: "Lobby" });
+	const lobbyBox = await lobby.boundingBox();
+	await replay.mouse.click(lobbyBox.x + 80, lobbyBox.y + 60, { button: "right" });
+	await replay.waitForSelector(".ctx-panel");
+	const tileMenu = await replay.locator(".ctx").textContent();
+	check(
+		"a tile's menu is about its camera",
+		tileMenu.startsWith("Lobby") && tileMenu.includes("Open full view"),
+		tileMenu.slice(0, 40),
+	);
+	await replay.keyboard.press("Escape");
+	await replay.waitForTimeout(200);
+
+	const wallClock = await replay.locator(".replay-clock").textContent();
+	await lobby.locator(".picture").dblclick();
+	await replay.waitForSelector(".replay-picture video");
+	await waitPlayhead((time) => time > 0, 15_000);
+	const opened = await replay.locator(".replay-stamp").textContent();
+	check(
+		"a double click opens one camera at the same moment",
+		opened.startsWith("Lobby") && Math.abs(seconds(opened) - seconds(wallClock)) < 8,
+		`${wallClock} / ${opened}`,
+	);
+	await replay.keyboard.press("Escape");
+	await replay.waitForSelector(".replay-wall");
+	check(
+		"Esc goes back to the playback wall",
+		(await replay.locator(".replay-picture").count()) === 0,
+	);
+	await replay.keyboard.press("Escape");
+	await replay.waitForTimeout(300);
+	check("Esc again goes back to live", (await replay.locator(".replay").count()) === 0);
+
+	// One camera, from a link with no moment: it opens just before its newest footage.
+	await replay.goto(`${base}/?view=all&replay=side-door`);
+	await replay.waitForSelector(".replay-picture video");
+	const started = await waitPlayhead((time) => time > 0, 15_000);
 	const first = await playhead();
-	check("P opens the camera's recordings", opened, `at ${first.toFixed(1)} s`);
+	check("a link opens one camera's recordings", started, `at ${first.toFixed(1)} s`);
 	check("playback moves", await waitPlayhead((time) => time > first + 1, 6_000));
 	await replay.keyboard.press(" ");
 	await replay.waitForTimeout(600);
@@ -532,6 +601,11 @@ check("the phone layout has no sideways scroll", !overflow);
 		stamp.startsWith("Lobby") && stamp.includes("01:0"),
 		stamp,
 	);
+	check(
+		"and keeps the speed",
+		(await replay.evaluate(() => document.querySelector(".replay-picture video").playbackRate)) ===
+			1,
+	);
 	await replay.screenshot({ path: join(out, "replay.png") });
 
 	await replay.setViewportSize({ width: 390, height: 780 });
@@ -541,20 +615,19 @@ check("the phone layout has no sideways scroll", !overflow);
 	);
 	check("the replay fits a phone", !replayOverflow);
 	await replay.setViewportSize({ width: 1600, height: 900 });
-	await replay.keyboard.press("Escape");
-	await replay.waitForSelector(".tile");
-	check("Esc goes back to the wall", (await replay.locator(".replay").count()) === 0);
+	await replay.keyboard.press("p");
+	await replay.waitForTimeout(300);
+	check("P goes back to live", (await replay.locator(".replay").count()) === 0);
 
 	// The top bar switch, the camera list and links all lead into playback.
 	await replay.locator('.mode[data-mode="replay"]').click();
-	await replay.waitForSelector(".replay");
-	check("the Playback switch opens playback", new URL(replay.url()).searchParams.has("replay"));
+	await replay.waitForSelector(".replay-wall");
 	check(
-		"wall tools hide in playback",
-		(await replay.locator('.topbar [aria-label="Layout"]').count()) === 0,
+		"the Playback switch opens the wall's playback",
+		new URL(replay.url()).searchParams.has("replay"),
 	);
 	await replay.locator(".rail-camera", { hasText: "Gate" }).click();
-	await replay.waitForTimeout(400);
+	await replay.waitForSelector(".replay-picture");
 	check(
 		"the camera list picks what plays",
 		(await replay.locator(".title").textContent()) === "Gate",
@@ -568,6 +641,12 @@ check("the phone layout has no sideways scroll", !overflow);
 		menuText.includes("Leave playback") && !menuText.includes("Layout"),
 	);
 	await replay.keyboard.press("Escape");
+	await replay.locator(".rail-view", { hasText: "Yard" }).click();
+	await replay.waitForSelector(".replay-wall");
+	check(
+		"another view keeps playing back, as a wall",
+		(await replay.locator(".title").textContent()) === "Yard",
+	);
 	await replay.locator('.mode[data-mode="live"]').click();
 	await replay.waitForSelector(".tile");
 
@@ -576,14 +655,19 @@ check("the phone layout has no sideways scroll", !overflow);
 	const pad = (n) => String(n).padStart(2, "0");
 	const stampDay = `${yesterday.getFullYear()}-${pad(yesterday.getMonth() + 1)}-${pad(yesterday.getDate())}`;
 	await replay.goto(`${base}/?view=all&replay=gate&at=${stampDay}T10:05:00`);
-	await replay.waitForSelector(".replay");
+	await replay.waitForSelector(".replay-picture");
 	await replay.waitForTimeout(800);
 	const linkedStamp = await replay.locator(".replay-stamp").textContent();
 	check(
-		"a link opens playback at its moment",
+		"a link opens one camera at its moment",
 		linkedStamp.includes("Gate") && linkedStamp.includes("10:05"),
 		linkedStamp,
 	);
+	await replay.goto(`${base}/?view=group:yard&replay=&at=${stampDay}T10:05:00`);
+	await replay.waitForSelector(".replay-wall");
+	await replay.waitForTimeout(1500);
+	const linkedClock = await replay.locator(".replay-clock").textContent();
+	check("a link opens a wall at its moment", linkedClock.includes("10:05"), linkedClock);
 	await replay.locator('.mode[data-mode="live"]').click();
 	await replay.waitForSelector(".tile");
 

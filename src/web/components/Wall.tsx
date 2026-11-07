@@ -12,7 +12,7 @@ const RATIO = 16 / 9;
 
 export type Fit = "fit" | "fill";
 
-type Placed = {
+export type Placed = {
 	index: number;
 	camera: CameraId | null;
 	column: string;
@@ -34,37 +34,28 @@ function place(spec: GridSpec, gridWidth: number, offset: number, wall: WallStat
 	});
 }
 
-export function Wall({
-	box,
+export type WallLayout = {
+	spec: GridSpec;
+	offset: number;
+	boxWidth: number;
+	boxHeight: number;
+};
+
+/** Where each tile of the wall goes in a box this size. Live and playback lay out the same. */
+export function useWallLayout({
+	width,
+	height,
 	wall,
-	cameras,
 	fit,
 	compact,
-	choices,
-	restarts,
-	onSelect,
-	onFocus,
-	onClear,
-	onChoice,
-	onReplay,
 }: {
-	box: RefObject<HTMLDivElement | null>;
+	width: number;
+	height: number;
 	wall: WallState;
-	cameras: ReadonlyMap<CameraId, PublicCamera>;
 	fit: Fit;
 	compact: boolean;
-	choices: ReadonlyMap<CameraId, QualityChoice>;
-	restarts: ReadonlyMap<CameraId, number>;
-	onSelect: (index: number) => void;
-	onFocus: (camera: CameraId | null) => void;
-	onClear: (index: number) => void;
-	onChoice: (camera: CameraId, choice: QualityChoice) => void;
-	onReplay: (camera: CameraId) => void;
-}) {
-	const { width, height } = useSize(box);
-	const active = usePageVisible();
-
-	const view = useMemo(() => {
+}): { view: WallLayout | null; placed: Placed[] } {
+	const view = useMemo((): WallLayout | null => {
 		if (width === 0) return null;
 		const fitInput = { width, height, ratio: RATIO, gap: GAP, chrome: STRIP };
 		if (compact) {
@@ -105,6 +96,51 @@ export function Wall({
 		() => (view ? place(view.spec, view.boxWidth, view.offset, wall) : []),
 		[view, wall],
 	);
+	return { view, placed };
+}
+
+/** The grid's own style, which both walls share. */
+export function gridStyle(view: WallLayout) {
+	return {
+		gridTemplateColumns: `repeat(${view.spec.cols}, minmax(0, 1fr))`,
+		gridTemplateRows: `repeat(${view.spec.rows}, minmax(0, 1fr))`,
+		width: view.boxWidth,
+		height: view.boxHeight,
+		gap: GAP,
+	};
+}
+
+export function Wall({
+	box,
+	wall,
+	cameras,
+	fit,
+	compact,
+	choices,
+	restarts,
+	onSelect,
+	onFocus,
+	onClear,
+	onChoice,
+	onReplay,
+}: {
+	box: RefObject<HTMLDivElement | null>;
+	wall: WallState;
+	cameras: ReadonlyMap<CameraId, PublicCamera>;
+	fit: Fit;
+	compact: boolean;
+	choices: ReadonlyMap<CameraId, QualityChoice>;
+	restarts: ReadonlyMap<CameraId, number>;
+	onSelect: (index: number) => void;
+	onFocus: (camera: CameraId | null) => void;
+	onClear: (index: number) => void;
+	onChoice: (camera: CameraId, choice: QualityChoice) => void;
+	onReplay: (camera: CameraId) => void;
+}) {
+	const { width, height } = useSize(box);
+	const active = usePageVisible();
+
+	const { view, placed } = useWallLayout({ width, height, wall, fit, compact });
 
 	const quality = useMemo(() => {
 		const scale = window.devicePixelRatio;
@@ -151,16 +187,7 @@ export function Wall({
 
 	if (!view) return null;
 	return (
-		<div
-			className={`wall-box wall-${fit}`}
-			style={{
-				gridTemplateColumns: `repeat(${view.spec.cols}, minmax(0, 1fr))`,
-				gridTemplateRows: `repeat(${view.spec.rows}, minmax(0, 1fr))`,
-				width: view.boxWidth,
-				height: view.boxHeight,
-				gap: GAP,
-			}}
-		>
+		<div className={`wall-box wall-${fit}`} style={gridStyle(view)}>
 			{placed.map((tile) => {
 				const camera = tile.camera ? (cameras.get(tile.camera) ?? null) : null;
 				return (

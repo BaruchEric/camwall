@@ -261,8 +261,8 @@ export type MenuTarget =
 	| { kind: "wall" }
 	| { kind: "rail" }
 	| { kind: "health" }
-	/** The footage on screen in playback. */
-	| { kind: "replay" };
+	/** Footage in playback: one camera's tile on the playback wall, or the whole of it. */
+	| { kind: "replay"; camera: CameraId | null };
 
 export const menuId = {
 	tile: (index: number) => `tile:${index}`,
@@ -273,10 +273,12 @@ export const menuId = {
 	rail: "rail",
 	health: "health",
 	replay: "replay",
+	replayTile: (id: CameraId) => `replay:${id}`,
 };
 
 export function parseMenuTarget(id: string): MenuTarget | null {
-	if (id === "wall" || id === "rail" || id === "health" || id === "replay") return { kind: id };
+	if (id === "wall" || id === "rail" || id === "health") return { kind: id };
+	if (id === "replay") return { kind: "replay", camera: null };
 	if (id === "ungrouped") return { kind: "group", group: null };
 	if (id === "all") return { kind: "view", ref: { kind: "all" } };
 	const [kind, value] = id.split(/:(.*)/);
@@ -287,6 +289,10 @@ export function parseMenuTarget(id: string): MenuTarget | null {
 	if (kind === "camera") {
 		const camera = CameraId.safeParse(value);
 		return camera.success ? { kind: "camera", camera: camera.data } : null;
+	}
+	if (kind === "replay") {
+		const camera = CameraId.safeParse(value);
+		return camera.success ? { kind: "replay", camera: camera.data } : null;
 	}
 	if (kind === "group") {
 		const group = GroupId.safeParse(value);
