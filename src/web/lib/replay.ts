@@ -253,6 +253,9 @@ export class ReplayPlayer {
 		const next = nextRange(ranges, time, margin);
 		if (next !== null) {
 			video.currentTime = next;
+			// Say where the jump landed now. Until the next watch the clock, and anything that
+			// reads it like a camera step or a skip, would still be at the old spot.
+			this.#listener.onTime(Math.min(DAY_MS, Math.round(next * 1000)));
 			return;
 		}
 		if (this.#paused || this.#state === "ended") return;
