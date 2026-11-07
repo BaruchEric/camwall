@@ -288,6 +288,20 @@ export async function openReplay(
 	await moveReplay(connection, target, ms);
 }
 
+/**
+ * Changes which channels the recorder sends, mid-playback. Channels it already sent carry on
+ * without a jump, and new ones start at their next key frame. Sending `open` again instead
+ * came back with one channel's timestamps wrong.
+ */
+export async function viewChannels(
+	connection: DvrConnection,
+	target: ReplayTarget,
+	ms: number,
+): Promise<void> {
+	const view = target.quality === "main" ? Control.viewMain : Control.viewSub;
+	await connection.request(REPLAY, Code.control, controlBody(view, 0, ms, target));
+}
+
 /** Sends the recorder's playback clock to `ms`. Frames that follow come from there. */
 export async function moveReplay(
 	connection: DvrConnection,

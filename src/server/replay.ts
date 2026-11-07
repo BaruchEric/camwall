@@ -8,6 +8,7 @@ import {
 	type RecorderAddress,
 	type ReplayTarget,
 	readChannelSpans,
+	viewChannels,
 } from "@/server/dvr/client";
 import {
 	Code,
@@ -62,6 +63,9 @@ export type ReplayRequest = {
 	ms: number;
 };
 
+/** What a session hears from its viewer. A change of cameras goes through `setChannels`. */
+type PlayCommand = Exclude<ReplayCommand, { type: "tracks" }>;
+
 /** Where playback should go from `clock`. Null means nothing is recorded after it. */
 export function nextRecorded(spans: readonly Span[], clock: number): number | null {
 	const span = spans.find(([, end]) => end > clock);
@@ -76,7 +80,27 @@ type ChannelState = {
 	settling: boolean;
 	held: VideoFrame | null;
 	sequence: number;
+	/** The newest frame the viewer already has. */
+	sent: number | null;
+	/**
+	 * After a change of cameras the recorder starts again from the playhead, behind what this
+	 * channel already sent. Its frames up to here are dropped, so its picture never restarts.
+	 */
+	resumeAfter: number | null;
 };
+
+const freshChannel = (tracks: readonly number[]): ChannelState => ({
+	tracks,
+	started: false,
+	settling: true,
+	held: null,
+	sequence: 0,
+	sent: null,
+	resumeAfter: null,
+});
+
+const sameTracks = (a: readonly number[], b: readonly number[]) =>
+	a.length === b.length && a.every((track, i) => track === b[i]);
 
 /**
  * Feeds one viewer from one recorder. The recorder plays every channel asked for on one clock,
@@ -99,7 +123,7 @@ export class ReplaySession {
 	/** The newest frame from any channel since the last move. */
 	#lastFrameMs: number | null = null;
 	#moving = false;
-	#queuedMove: { ms: number; announce: boolean } | null = null;
+	#queuedMove: { ms: number; announce: boolean; view: boolean } | null = null;
 	#ended = false;
 	/** Every channel's recordings, joined. Silence is skipped only where all of them are quiet. */
 	#spans: Span[] | null = null;
@@ -111,10 +135,7 @@ export class ReplaySession {
 		this.#playhead = request.ms;
 		this.#clock = request.ms;
 		this.#channels = new Map(
-			request.channels.map(({ channel, tracks }) => [
-				channel,
-				{ tracks, started: false, settling: true, held: null, sequence: 0 },
-			]),
+			request.channels.map(({ channel, tracks }) => [channel, freshChannel(tracks)]),
 		);
 	}
 
@@ -147,7 +168,28 @@ export class ReplaySession {
 		this.#connection?.close();
 	}
 
-	handle(command: ReplayCommand): void {
+	/**
+	 * Plays these channels from now on, without a new connection. Channels it already plays keep
+	 * going, and new ones start at `playhead`, which is where the viewer is.
+	 */
+	setChannels(channels: readonly ReplayChannel[], playhead: number): void {
+		const next = new Map<number, ChannelState>();
+		for (const { channel, tracks } of channels) {
+			const old = this.#channels.get(channel);
+			if (old?.started && sameTracks(old.tracks, tracks)) {
+				next.set(channel, { ...old, held: null, settling: false, resumeAfter: old.sent });
+			} else {
+				next.set(channel, freshChannel(tracks));
+			}
+		}
+		this.#channels = next;
+		if (this.#target) this.#target = { ...this.#target, channels: [...next.keys()] };
+		this.#playhead = playhead;
+		void this.#refreshSpans();
+		this.#move(playhead, false, true);
+	}
+
+	handle(command: PlayCommand): void {
 		switch (command.type) {
 			case "at":
 				this.#playhead = command.ms;
@@ -190,22 +232,32 @@ export class ReplaySession {
 		}
 	}
 
-	#move(ms: number, announce: boolean): void {
+	/** `view` also tells the recorder which channels to send, after a change of cameras. */
+	#move(ms: number, announce: boolean, view = false): void {
 		if (this.#moving) {
-			this.#queuedMove = { ms, announce: announce || this.#queuedMove?.announce === true };
+			const queued = this.#queuedMove;
+			this.#queuedMove = {
+				ms,
+				announce: announce || queued?.announce === true,
+				view: view || queued?.view === true,
+			};
 			return;
 		}
-		void this.#moveNow(ms, announce);
+		void this.#moveNow(ms, announce, view);
 	}
 
-	async #moveNow(ms: number, announce: boolean): Promise<void> {
+	async #moveNow(ms: number, announce: boolean, view = false): Promise<void> {
 		const connection = this.#connection;
 		const target = this.#target;
 		if (!connection || !target) return;
 		this.#moving = true;
-		for (const channel of this.#channels.values()) {
-			channel.settling = true;
-			channel.held = null;
+		// A change of cameras has set up its channels already. Anything else starts them over.
+		if (!view) {
+			for (const channel of this.#channels.values()) {
+				channel.settling = true;
+				channel.held = null;
+				channel.resumeAfter = null;
+			}
 		}
 		this.#ended = false;
 		this.#stuck = 0;
@@ -213,6 +265,7 @@ export class ReplaySession {
 		this.#lastFrameMs = null;
 		if (announce) this.#playhead = ms;
 		try {
+			if (view) await viewChannels(connection, target, ms);
 			await moveReplay(connection, target, ms);
 		} catch (error) {
 			this.#fail(error);
@@ -223,7 +276,7 @@ export class ReplaySession {
 		if (announce) this.#out.event({ type: "seeked", ms });
 		const queued = this.#queuedMove;
 		this.#queuedMove = null;
-		if (queued) void this.#moveNow(queued.ms, queued.announce);
+		if (queued) void this.#moveNow(queued.ms, queued.announce, queued.view);
 	}
 
 	#receive(message: Message): void {
@@ -234,12 +287,17 @@ export class ReplaySession {
 		const frame = parseVideo(message);
 		const channel = frame ? this.#channels.get(frame.channel) : undefined;
 		if (!frame || !channel || this.#moving) return;
+		// Any frame shows how far the recorder has read, even one the viewer already has.
+		this.#lastFrameMs = Math.max(this.#lastFrameMs ?? 0, frame.ms);
+		if (channel.resumeAfter !== null) {
+			if (frame.ms <= channel.resumeAfter) return;
+			channel.resumeAfter = null;
+		}
 		if (channel.settling) {
 			if (!frame.key) return;
 			channel.settling = false;
 		}
 		if (!channel.started && !this.#begin(channel, frame)) return;
-		this.#lastFrameMs = Math.max(this.#lastFrameMs ?? 0, frame.ms);
 		const held = channel.held;
 		channel.held = frame;
 		if (held) this.#emit(channel, held, frame.ms - held.ms);
@@ -260,6 +318,7 @@ export class ReplaySession {
 
 	#emit(channel: ChannelState, frame: VideoFrame, gap: number): void {
 		channel.sequence++;
+		channel.sent = frame.ms;
 		const data = fragment({
 			sequence: channel.sequence,
 			dts: frame.ms,
@@ -318,41 +377,91 @@ export class ReplaySession {
 	}
 }
 
+/** One recorder's part of a viewer's replay. */
+export type RecorderPart = { address: RecorderAddress; channels: readonly ReplayChannel[] };
+
+const partKey = ({ host, port }: RecorderAddress) => `${host}:${port}`;
+
 /**
  * One viewer's replay across however many recorders its cameras sit on, one session each. A
  * seek counts as done, and the footage as over, only once every recorder has said so.
  */
 export class ReplayMux {
-	#sessions: ReplaySession[];
+	#sessions = new Map<string, ReplaySession>();
 	#out: ReplayOutput;
+	#quality: Quality;
+	#day: string;
+	#playhead: number;
+	#rate: Extract<ReplayCommand, { type: "rate" }> = { type: "rate", value: 1 };
 	#seeking = new Set<ReplaySession>();
 	#ended = new Set<ReplaySession>();
 
-	constructor(requests: readonly ReplayRequest[], out: ReplayOutput) {
+	constructor(
+		parts: readonly RecorderPart[],
+		{ quality, day, ms }: { quality: Quality; day: string; ms: number },
+		out: ReplayOutput,
+	) {
 		this.#out = out;
-		this.#sessions = requests.map((request) => {
-			const session: ReplaySession = new ReplaySession(request, {
-				...out,
-				event: (event) => this.#event(session, event),
-			});
-			return session;
-		});
+		this.#quality = quality;
+		this.#day = day;
+		this.#playhead = ms;
+		for (const part of parts) this.#add(part);
 	}
 
 	start(): Promise<void> {
-		return Promise.all(this.#sessions.map((session) => session.start())).then(() => undefined);
+		const sessions = [...this.#sessions.values()];
+		return Promise.all(sessions.map((session) => session.start())).then(() => undefined);
 	}
 
 	stop(): void {
-		for (const session of this.#sessions) session.stop();
+		for (const session of this.#sessions.values()) session.stop();
 	}
 
-	handle(command: ReplayCommand): void {
+	handle(command: PlayCommand): void {
 		if (command.type === "seek") {
-			this.#seeking = new Set(this.#sessions);
+			this.#seeking = new Set(this.#sessions.values());
 			this.#ended.clear();
 		}
-		for (const session of this.#sessions) session.handle(command);
+		if (command.type === "seek" || command.type === "at") this.#playhead = command.ms;
+		if (command.type === "rate") this.#rate = command;
+		for (const session of this.#sessions.values()) session.handle(command);
+	}
+
+	/** The viewer's cameras changed. Recorders it still uses carry on, and others join or leave. */
+	retarget(parts: readonly RecorderPart[]): void {
+		const wanted = new Map(parts.map((part) => [partKey(part.address), part]));
+		for (const [key, session] of this.#sessions) {
+			const part = wanted.get(key);
+			if (part) {
+				session.setChannels(part.channels, this.#playhead);
+				wanted.delete(key);
+				continue;
+			}
+			session.stop();
+			this.#sessions.delete(key);
+			this.#seeking.delete(session);
+			this.#ended.delete(session);
+		}
+		for (const part of wanted.values()) {
+			const session = this.#add(part);
+			void session.start();
+			session.handle(this.#rate);
+		}
+	}
+
+	#add(part: RecorderPart): ReplaySession {
+		const session: ReplaySession = new ReplaySession(
+			{
+				address: part.address,
+				channels: part.channels,
+				quality: this.#quality,
+				day: this.#day,
+				ms: this.#playhead,
+			},
+			{ ...this.#out, event: (event) => this.#event(session, event) },
+		);
+		this.#sessions.set(partKey(part.address), session);
+		return session;
 	}
 
 	#event(session: ReplaySession, event: ReplayEvent): void {
@@ -363,7 +472,7 @@ export class ReplayMux {
 				return;
 			case "end":
 				this.#ended.add(session);
-				if (this.#ended.size === this.#sessions.length) this.#out.event(event);
+				if (this.#ended.size === this.#sessions.size) this.#out.event(event);
 				return;
 			default:
 				this.#out.event(event);

@@ -315,6 +315,40 @@ describe("against a fake recorder", () => {
 		expect(firstOn(1)).toBe(firstOn(2));
 	});
 
+	test("cameras change without a new connection, and the ones kept never restart", async () => {
+		const { events, sent, tracks, out } = collect();
+		const session = new ReplaySession(request(1, 3_600_000), out);
+		await session.start();
+		await until(() => sent.length > 20);
+		const decodeTime = (data: Uint8Array) => {
+			const box = Buffer.from(data);
+			const at = box.indexOf("tfdt", 0, "latin1");
+			return at < 0 ? null : box.readUInt32BE(at + 12);
+		};
+		const timesOf = (track: number) =>
+			sent
+				.flatMap((data, i) => (tracks[i] === track ? [decodeTime(data)] : []))
+				.filter((t) => t !== null);
+		const before = timesOf(0).length;
+		session.setChannels(
+			[
+				{ channel: 1, tracks: [0] },
+				{ channel: 3, tracks: [1] },
+			],
+			3_601_000,
+		);
+		session.handle({ type: "at", ms: 3_601_000 });
+		await until(() => timesOf(1).length > 10 && timesOf(0).length > before + 10);
+		session.stop();
+		expect(events.filter((e) => e === "mse 0")).toHaveLength(1);
+		expect(events).toContain("mse 1");
+		const kept = timesOf(0);
+		expect(kept.every((time, i) => i === 0 || time > (kept[i - 1] ?? 0))).toBe(true);
+		const joined = timesOf(1)[0] ?? 0;
+		expect(joined).toBeGreaterThanOrEqual(3_601_000);
+		expect(joined).toBeLessThan(3_603_000);
+	});
+
 	test("the last recording of a day ends the replay", async () => {
 		const { events, out } = collect();
 		const session = new ReplaySession(request(2, 83_395_000), out);
@@ -345,35 +379,33 @@ describe("two recorders behind one viewer", () => {
 		second.close();
 	});
 
-	test("a seek is done once both recorders have moved, and said once", async () => {
-		const events: string[] = [];
-		const tracks = new Set<number>();
+	const today = () => {
 		const now = new Date();
 		const pad = (n: number) => String(n).padStart(2, "0");
-		const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+		return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+	};
+
+	function watch() {
+		const events: string[] = [];
+		const tracks = new Set<number>();
+		const out: ReplayOutput = {
+			event: (event) => events.push(event.type),
+			bytes: (track) => tracks.add(track),
+			queued: () => 0,
+			close: () => undefined,
+		};
+		return { events, tracks, out };
+	}
+
+	test("a seek is done once both recorders have moved, and said once", async () => {
+		const { events, tracks, out } = watch();
 		const mux = new ReplayMux(
 			[
-				{
-					address: addressOf(first),
-					channels: [{ channel: 1, tracks: [0] }],
-					quality: "sub",
-					day,
-					ms: 0,
-				},
-				{
-					address: addressOf(second),
-					channels: [{ channel: 4, tracks: [1] }],
-					quality: "sub",
-					day,
-					ms: 0,
-				},
+				{ address: addressOf(first), channels: [{ channel: 1, tracks: [0] }] },
+				{ address: addressOf(second), channels: [{ channel: 4, tracks: [1] }] },
 			],
-			{
-				event: (event) => events.push(event.type),
-				bytes: (track) => tracks.add(track),
-				queued: () => 0,
-				close: () => undefined,
-			},
+			{ quality: "sub", day: today(), ms: 0 },
+			out,
 		);
 		await mux.start();
 		for (let i = 0; i < 300 && tracks.size < 2; i++) await Bun.sleep(10);
@@ -383,6 +415,30 @@ describe("two recorders behind one viewer", () => {
 		await Bun.sleep(100);
 		mux.stop();
 		expect(events.filter((e) => e === "seeked")).toHaveLength(1);
+	});
+
+	test("a camera on another recorder joins, and one no longer shown goes", async () => {
+		const { tracks, out } = watch();
+		const mux = new ReplayMux(
+			[{ address: addressOf(first), channels: [{ channel: 1, tracks: [0] }] }],
+			{ quality: "sub", day: today(), ms: 3_600_000 },
+			out,
+		);
+		await mux.start();
+		for (let i = 0; i < 300 && !tracks.has(0); i++) await Bun.sleep(10);
+		mux.retarget([
+			{ address: addressOf(first), channels: [{ channel: 1, tracks: [0] }] },
+			{ address: addressOf(second), channels: [{ channel: 4, tracks: [1] }] },
+		]);
+		for (let i = 0; i < 300 && !tracks.has(1); i++) await Bun.sleep(10);
+		expect(tracks.has(1)).toBe(true);
+		mux.retarget([{ address: addressOf(second), channels: [{ channel: 4, tracks: [1] }] }]);
+		await Bun.sleep(100);
+		tracks.clear();
+		mux.handle({ type: "at", ms: 3_700_000 });
+		await Bun.sleep(300);
+		mux.stop();
+		expect([...tracks]).toEqual([1]);
 	});
 });
 

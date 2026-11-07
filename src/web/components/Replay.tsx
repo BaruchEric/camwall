@@ -44,9 +44,11 @@ export function ReplayView({
 	const [quality, setQuality] = useState<Quality>("main");
 	const [zoom, setZoom] = useState<ZoomHours>(24);
 	const wide = useMedia("(min-width: 900px)");
-	const list = useMemo(() => [camera], [camera]);
-	const videos = useCallback(() => [video.current], []);
-	const playback = usePlayback({ cameras: list, quality, at, videos });
+	const scope = useMemo(() => [camera], [camera]);
+	const tracks = useMemo(() => [{ key: 0, camera }], [camera]);
+	const element = useCallback(() => video.current, []);
+	// Stepping to another camera starts a new connection, so the old picture never lingers.
+	const playback = usePlayback({ scope, tracks, restart: camera, quality, at, video: element });
 	const { day, position, paused, rate, seek, toggle, setRate } = playback;
 
 	const here = cameras.findIndex((c) => c.id === camera);

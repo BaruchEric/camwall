@@ -172,25 +172,33 @@ export const ReplayDays = z.object({ days: z.array(Day) });
 export const ReplaySpans = z.object({ spans: z.array(z.tuple([DayMs, DayMs])) });
 export type Span = z.infer<typeof ReplaySpans>["spans"][number];
 
-/** All a viewer may say about a replay. `at` is where its playhead is. */
+/**
+ * One replay socket carries several cameras, at most this many at once. Each binary message
+ * starts with its track, one byte, and a socket never gives the same track to two cameras.
+ */
+export const MAX_REPLAY_TRACKS = 32;
+export const MAX_TRACK_ID = 255;
+const TrackId = z.number().int().min(0).max(MAX_TRACK_ID);
+
+/**
+ * All a viewer may say about a replay. `at` is where its playhead is. `tracks` is every camera
+ * it now shows: those it already had keep playing, and the rest start at the playhead.
+ */
 export const ReplayCommand = z.discriminatedUnion("type", [
 	z.object({ type: z.literal("seek"), ms: DayMs }),
 	z.object({ type: z.literal("at"), ms: DayMs }),
 	z.object({ type: z.literal("rate"), value: z.union(REPLAY_RATES.map((n) => z.literal(n))) }),
+	z.object({
+		type: z.literal("tracks"),
+		tracks: z.array(z.object({ track: TrackId, camera: CameraId })).max(MAX_REPLAY_TRACKS),
+	}),
 ]);
 export type ReplayCommand = z.infer<typeof ReplayCommand>;
-
-/** One replay socket can carry several cameras. Each binary message starts with its track. */
-export const MAX_REPLAY_TRACKS = 32;
 
 export const ReplayEvent = z.discriminatedUnion("type", [
 	z.object({
 		type: z.literal("mse"),
-		track: z
-			.number()
-			.int()
-			.min(0)
-			.max(MAX_REPLAY_TRACKS - 1),
+		track: TrackId,
 		value: z.string(),
 	}),
 	z.object({ type: z.literal("seeked"), ms: DayMs }),

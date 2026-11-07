@@ -564,6 +564,58 @@ check("the phone layout has no sideways scroll", !overflow);
 	await replay.waitForTimeout(300);
 	check("Esc again goes back to live", (await replay.locator(".replay").count()) === 0);
 
+	// On a phone only the tiles on screen play. A scroll brings new ones in at the same moment, on
+	// the same connection, and the tiles still on screen keep playing without a restart.
+	{
+		const phone = await browser.newContext({
+			viewport: { width: 390, height: 780 },
+			isMobile: true,
+			hasTouch: true,
+		});
+		const page = await phone.newPage();
+		page.on("pageerror", (error) => errors.push(error.message));
+		const playingNow = () =>
+			page.evaluate(() => {
+				window.__sources ??= new Map();
+				const found = {};
+				for (const tile of document.querySelectorAll(".replay-tile")) {
+					const video = tile.querySelector("video");
+					if (!video || video.readyState < 2 || video.paused) continue;
+					const name = tile.querySelector(".strip-name").textContent;
+					const source = video.srcObject ?? video.src;
+					const same = window.__sources.get(name) === source;
+					window.__sources.set(name, source);
+					found[name] = { time: video.currentTime, same };
+				}
+				return found;
+			});
+		await page.goto(`${base}/?view=all&replay=`);
+		await page.waitForSelector(".replay-wall");
+		let before = {};
+		for (const end = Date.now() + 20_000; Date.now() < end; ) {
+			before = await playingNow();
+			if (Object.keys(before).length >= 4) break;
+			await page.waitForTimeout(300);
+		}
+		await page.locator(".replay-grid").evaluate((grid) => grid.scrollBy(0, 200));
+		let after = {};
+		for (const end = Date.now() + 15_000; Date.now() < end; ) {
+			await page.waitForTimeout(500);
+			after = await playingNow();
+			if (Object.keys(after).some((name) => !(name in before))) break;
+		}
+		const added = Object.keys(after).filter((name) => !(name in before));
+		const kept = Object.keys(after).filter((name) => name in before);
+		check("a phone scroll brings new tiles in", added.length > 0, added.join(", "));
+		check(
+			"and the tiles still on screen keep playing, unrestarted",
+			kept.length > 0 &&
+				kept.every((name) => after[name].same && after[name].time > before[name].time),
+			kept.map((name) => `${name} ${after[name].same ? "same" : "new"}`).join(", "),
+		);
+		await phone.close();
+	}
+
 	// One camera, from a link with no moment: it opens just before its newest footage.
 	await replay.goto(`${base}/?view=all&replay=side-door`);
 	await replay.waitForSelector(".replay-picture video");

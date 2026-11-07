@@ -190,14 +190,19 @@ export function ReplayWall({
 				.slice(0, MAX_REPLAY_TRACKS),
 		[placed, cameras, visible],
 	);
-	const playingCameras = useMemo(
-		() => playing.flatMap((tile) => (tile.camera ? [tile.camera] : [])),
+	const tracks = useMemo(
+		() =>
+			playing.flatMap((tile) => (tile.camera ? [{ key: tile.index, camera: tile.camera }] : [])),
 		[playing],
 	);
-	const trackOf = useMemo(
-		() => new Map(playing.map((tile, track) => [tile.index, track])),
-		[playing],
-	);
+	const playingIndexes = useMemo(() => new Set(playing.map((tile) => tile.index)), [playing]);
+	/** Every camera on the page with a recorder, for the days and the timeline. */
+	const scope = useMemo(() => {
+		const ids = placed.flatMap((tile) =>
+			tile.camera && cameras.get(tile.camera)?.hasReplay ? [tile.camera] : [],
+		);
+		return [...new Set(ids)];
+	}, [placed, cameras]);
 
 	// Like live, big tiles get the big stream. A recorder plays one quality at a time, so all of
 	// them have to be big enough, and few enough.
@@ -208,11 +213,8 @@ export function ReplayWall({
 		return playing.length > 0 && playing.length <= MAIN_CAP && big ? "main" : "sub";
 	}, [choice, playing]);
 
-	const videos = useCallback(
-		() => playing.map((tile) => elements.current.get(tile.index) ?? null),
-		[playing],
-	);
-	const playback = usePlayback({ cameras: playingCameras, quality, at, videos });
+	const video = useCallback((key: number) => elements.current.get(key) ?? null, []);
+	const playback = usePlayback({ scope, tracks, restart: "", quality, at, video });
 	const { day, position, paused, rate, seek, toggle, setRate, covered, state } = playback;
 
 	const selectedSlot = wall.selected === null ? null : (wall.slots[wall.selected] ?? null);
@@ -253,10 +255,10 @@ export function ReplayWall({
 	const noteFor = (index: number, camera: PublicCamera | null): TileNote => {
 		if (camera === null) return null;
 		if (!camera.hasReplay) return "No recorder linked";
-		const track = trackOf.get(index);
-		if (track === undefined) return visible.has(index) ? "Too many to play at once" : null;
-		if (covered[track]) return null;
-		return waiting || covered.length === 0 ? "Fetching video" : "Nothing recorded at this moment";
+		if (!playingIndexes.has(index)) return visible.has(index) ? "Too many to play at once" : null;
+		const here = covered.get(index);
+		if (here) return null;
+		return waiting || here === undefined ? "Fetching video" : "Nothing recorded at this moment";
 	};
 	const anyRecorded = placed.some((tile) => tile.camera && cameras.get(tile.camera)?.hasReplay);
 	const wallNote =
@@ -277,7 +279,6 @@ export function ReplayWall({
 					<div className={`wall-box wall-${fit}`} style={gridStyle(view)}>
 						{placed.map((tile) => {
 							const camera = tile.camera ? (cameras.get(tile.camera) ?? null) : null;
-							const track = trackOf.get(tile.index);
 							return (
 								<div
 									key={tile.index}
@@ -288,7 +289,7 @@ export function ReplayWall({
 										index={tile.index}
 										camera={camera}
 										note={noteFor(tile.index, camera)}
-										dim={track !== undefined && covered.length > 0 && covered[track] === false}
+										dim={covered.get(tile.index) === false}
 										selected={wall.selected === tile.index}
 										register={register}
 										onScreen={onScreen}

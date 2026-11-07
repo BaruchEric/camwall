@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { CameraId, Quality, ReplayRate, Span } from "@/shared/schema";
 import { api } from "@/web/lib/api";
-import { ReplayPlayer, type ReplayState } from "@/web/lib/replay";
+import { type ReplayEntry, ReplayPlayer, type ReplayState } from "@/web/lib/replay";
 import { clampDay, type Moment, openingMs } from "@/web/lib/timeline";
 
 export const STATE_NOTE: Record<ReplayState, string | null> = {
@@ -23,7 +23,8 @@ export type Playback = {
 	paused: boolean;
 	rate: ReplayRate;
 	/** Which cameras, in the order given, hold footage at the playhead. */
-	covered: readonly boolean[];
+	/** Which pictures, by key, hold footage at the playhead. */
+	covered: ReadonlyMap<number, boolean>;
 	/** What to say over the picture, if anything. */
 	note: string | null;
 	/** True when the note is bad news rather than a wait. */
@@ -42,20 +43,31 @@ export type Playback = {
  * playhead is, and the player itself. However the cameras or the quality change, from a step,
  * the camera list, a page or another view, the moment stays.
  */
+/** A picture that plays: a tile's index, or 0 for the one big picture, and its camera. */
+export type PlaybackTrack = { key: number; camera: CameraId };
+
 export function usePlayback({
-	cameras,
+	scope,
+	tracks,
+	restart,
 	quality,
 	at,
-	videos,
+	video,
 }: {
-	/** In the order of `videos`. Empty means nothing on screen can play back. */
-	cameras: readonly CameraId[];
+	/** The cameras the days and the timeline cover. Empty means nothing here can play back. */
+	scope: readonly CameraId[];
+	/** What plays now. These come and go on one connection, so a scroll or a page costs no restart. */
+	tracks: readonly PlaybackTrack[];
+	/** A change here starts a new connection, like stepping to another camera in full view. */
+	restart: string;
 	quality: Quality;
 	/** Where to open, from a link or another view. Null opens just before the newest footage. */
 	at: Moment | null;
-	videos: () => readonly (HTMLVideoElement | null)[];
+	video: (key: number) => HTMLVideoElement | null;
 }): Playback {
-	const key = cameras.join(",");
+	const scopeKey = scope.join(",");
+	const tracksKey = tracks.map(({ key, camera }) => `${key}:${camera}`).join(",");
+	const hasTracks = tracks.length > 0;
 	const player = useRef<ReplayPlayer | null>(null);
 	const [days, setDays] = useState<readonly string[]>([]);
 	const [day, setDay] = useState<string | null>(at?.day ?? null);
@@ -67,27 +79,40 @@ export function usePlayback({
 	const [state, setState] = useState<ReplayState>("opening");
 	const [detail, setDetail] = useState<string | null>(null);
 	const [problem, setProblem] = useState<string | null>(null);
-	const [covered, setCovered] = useState<readonly boolean[]>([]);
+	const [covered, setCovered] = useState<ReadonlyMap<number, boolean>>(new Map());
 	const [attempt, setAttempt] = useState(0);
 
-	const [shown, setShown] = useState({ key, quality });
-	if (shown.key !== key || shown.quality !== quality) {
-		setShown({ key, quality });
+	// A new connection opens where the old one was, so the moment stays.
+	const [shown, setShown] = useState({ restart, quality, hasTracks });
+	if (shown.restart !== restart || shown.quality !== quality || shown.hasTracks !== hasTracks) {
+		setShown({ restart, quality, hasTracks });
 		setStart((current) => (current === null ? null : position));
-		setCovered([]);
+		setCovered(new Map());
 	}
 
 	const dayNow = useRef(day);
 	dayNow.current = day;
 	const rateNow = useRef(rate);
 	rateNow.current = rate;
-	const videosNow = useRef(videos);
-	videosNow.current = videos;
+	const positionNow = useRef(position);
+	positionNow.current = position;
+	const tracksNow = useRef(tracks);
+	tracksNow.current = tracks;
+	const videoNow = useRef(video);
+	videoNow.current = video;
+	const entries = useCallback(
+		(): ReplayEntry[] =>
+			tracksNow.current.flatMap(({ key, camera }) => {
+				const element = videoNow.current(key);
+				return element ? [{ key, camera, video: element }] : [];
+			}),
+		[],
+	);
 
 	useEffect(() => {
-		if (key === "") return;
+		if (scopeKey === "") return;
 		let live = true;
-		api.replayDays(key.split(",")).then(
+		api.replayDays(scopeKey.split(",")).then(
 			(found) => {
 				if (!live) return;
 				setProblem(found.length === 0 ? "This recorder holds no footage." : null);
@@ -106,13 +131,13 @@ export function usePlayback({
 		return () => {
 			live = false;
 		};
-	}, [key]);
+	}, [scopeKey]);
 
 	useEffect(() => {
-		if (key === "" || day === null) return;
+		if (scopeKey === "" || day === null) return;
 		let live = true;
 		setSpans(null);
-		api.replaySpans(key.split(","), day).then(
+		api.replaySpans(scopeKey.split(","), day).then(
 			(found) => {
 				if (!live) return;
 				setSpans(found);
@@ -126,17 +151,15 @@ export function usePlayback({
 		return () => {
 			live = false;
 		};
-	}, [key, day]);
+	}, [scopeKey, day]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is how Try again reconnects
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `restart` and `attempt` start over on purpose
 	useEffect(() => {
-		if (key === "" || day === null || start === null) return;
-		const elements = videosNow.current();
-		const ready = elements.filter((element) => element !== null);
-		if (ready.length !== elements.length || ready.length === 0) return;
+		if (!hasTracks || day === null || start === null) return;
+		const first = entries();
+		if (first.length === 0) return;
 		setPosition(start);
 		const next = new ReplayPlayer(
-			ready,
 			{
 				onState: (value, text) => {
 					setState(value);
@@ -148,12 +171,22 @@ export function usePlayback({
 			rateNow.current,
 		);
 		player.current = next;
-		next.start(key.split(","), quality, day, start);
+		next.start(first, quality, day, start);
 		return () => {
 			next.stop();
 			player.current = null;
 		};
-	}, [key, quality, day, start, attempt]);
+	}, [restart, quality, day, start, attempt, hasTracks, entries]);
+
+	// Cameras coming and going, from a scroll, a page or another view, keep the connection.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: `tracksKey` is what changed
+	useEffect(() => {
+		const current = player.current;
+		if (!current || current.setEntries(entries())) return;
+		// The socket has given out all its track numbers. A new one starts at the same moment.
+		setStart(positionNow.current);
+		setAttempt((value) => value + 1);
+	}, [tracksKey, entries]);
 
 	const seek = useCallback((ms: number) => player.current?.seek(clampDay(ms)), []);
 
