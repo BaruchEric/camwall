@@ -2,6 +2,7 @@ node_modules
 dist
 data
 .git
+.env.local
 docs
 e2e
 tests

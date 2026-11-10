@@ -3,4 +3,5 @@ dist
 data
 *.tsbuildinfo
 .DS_Store
+.env.local
 test-results

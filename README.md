@@ -129,6 +129,12 @@ bun run typecheck && bun run lint && bun run test && bun run build
 
 `bun run e2e` drives the demo stack in Chrome and needs Node and a local Chrome.
 
+If Docker already uses port 8090, put `PORT=8091` in `.env.local` before running
+`bun run start` or `bun run dev`. Bun loads this local file automatically; the
+development proxy follows `PORT` too. Native runs use `PORT`, while
+`CAMWALL_PORT` controls Docker's published port. The native app uses its own
+`./data` directory and needs a separate, reachable `GO2RTC_URL` for live video.
+
 ## License
 
 MIT
